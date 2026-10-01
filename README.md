@@ -2,7 +2,7 @@
 
 A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **offline, on the device**.
 
-> **Windows and Linux:** there is also a version for Windows (installer or portable .zip) and Linux (AppImage) in [`desktop/`](desktop/README.md). It has the same features, uses faster-whisper and sherpa-onnx instead of Apple's Core ML, and is built automatically by GitHub Actions.
+> **Windows and Linux:** there is also a version for Windows (installer or portable .zip) and Linux (AppImage) in [`desktop/`](desktop/README.md). It has the same features, uses faster-whisper and sherpa-onnx instead of Apple's Core ML, and GitHub Actions builds it automatically, together with the Mac app.
 
 - **Transcribe an existing file:** choose or drag in an `.m4a` file (`.mp3`, `.wav` and other common audio formats also work).
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out of the recording. Everything you record while unpaused is saved to **one** `.m4a` file.
@@ -14,7 +14,7 @@ Speech recognition uses [WhisperKit](https://github.com/argmaxinc/WhisperKit), w
 
 ## Build
 
-Each version must be built on the system it's for: the Mac app on a Mac, the Windows app on Windows, and the Linux AppImage on Linux. If you don't want to build it yourself, GitHub can build the Windows and Linux versions for you ([see below](#let-github-build-windows-and-linux)).
+Each version must be built on the system it's for: the Mac app on a Mac, the Windows app on Windows, and the Linux AppImage on Linux. If you don't want to build it yourself, GitHub builds all three for you ([see below](#let-github-build-the-apps)).
 
 First get the code:
 
@@ -100,11 +100,11 @@ Requirements: a 64-bit x86 Linux system. The AppImage runs on the distribution y
 
 The first build takes a few minutes, because it also downloads the dependencies and compiles the PortAudio audio library. The AppImage contains everything, so you can copy that one file to other Linux computers. If it doesn't start there, the computer may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`, Arch: `sudo pacman -S fuse2`). Alternatively, run it with `--appimage-extract-and-run`.
 
-### Let GitHub build Windows and Linux
+### Let GitHub build the apps
 
-The workflow in `.github/workflows/desktop.yml` builds and tests both versions on GitHub's computers:
+The workflow in `.github/workflows/build.yml` builds the Mac app, the Windows installer and `.zip`, and the Linux AppImage on GitHub's computers:
 
-- **Any change:** it runs on every pull request and every push to `main` that touches `desktop/`. Open the run under the repository's **Actions** tab. When it's done, download the files from **Artifacts** at the bottom of the page.
+- **Every merge to `main`:** all three are built. It also runs on pull requests that change one of the apps. Open the run under the repository's **Actions** tab. When it's done, download the files from **Artifacts** at the bottom of the page.
 - **A release:** push a tag that starts with `desktop-v`:
 
   ```sh
@@ -112,7 +112,13 @@ The workflow in `.github/workflows/desktop.yml` builds and tests both versions o
   git push origin desktop-v1.0.0
   ```
 
-  The installer, the `.zip` and the AppImage then appear under the repository's **Releases**.
+  The Mac app, the installer, the `.zip` and the AppImage then appear under the repository's **Releases**.
+
+The Mac app from GitHub is only ad-hoc signed, not notarized by Apple, so macOS blocks it the first time ("can't be opened" or "is damaged"). After unzipping it and moving it to **Applications**, run this once:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Leos Lyssnare.app"
+```
 
 ### Checking a build
 

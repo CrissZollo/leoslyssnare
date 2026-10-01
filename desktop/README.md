@@ -22,9 +22,9 @@ No audio or text ever leaves the computer.
 
 ## Download and install
 
-Ready-made builds come from GitHub Actions (`.github/workflows/desktop.yml`):
+Ready-made builds come from GitHub Actions (`.github/workflows/build.yml`):
 
-- Each run of the **Desktop app (Windows and Linux)** workflow attaches the builds to the run. Look under *Actions* and download the artifacts.
+- Every merge to `main` runs the **Build apps** workflow, which attaches the builds to the run. Look under *Actions* and download the artifacts.
 - Pushing a tag such as `desktop-v1.0.0` also publishes them as a GitHub Release.
 
 ### Windows
