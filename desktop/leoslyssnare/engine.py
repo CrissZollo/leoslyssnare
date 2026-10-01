@@ -8,6 +8,7 @@ background thread.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import tarfile
@@ -60,6 +61,8 @@ EMBEDDING_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/"
                  "speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx")
 
 SAMPLE_RATE = 16_000
+# Stretches of speech decoded together. 16 was hardly faster on a 16-core CPU.
+BATCH_SIZE = 8
 _COMPLETE_MARKER = ".complete"
 
 Progress = Callable[[float], None]
@@ -198,6 +201,90 @@ def download_speaker_models(progress: Progress) -> None:
         os.replace(os.path.join(work, "embedding.onnx"), embedding_model())
 
 
+# MARK: - Progress
+
+
+class BatchPacer:
+    """Keeps the progress bar moving while a batch is decoded.
+
+    A batch covers several minutes of the recording and finishes all at once,
+    so on its own the bar would sit still and then jump. While a batch runs,
+    this estimates how far it has got from how fast the earlier batches went,
+    but never claims more than most of the batch: the real result moves it on.
+    """
+
+    # Seconds of computing per second of speech, until a batch has been timed.
+    # About what large-v3-turbo needs on a recent desktop CPU.
+    FIRST_GUESS = 0.15
+
+    def __init__(self, duration: float, progress: Progress) -> None:
+        self.duration = duration
+        self._progress = progress
+        self._lock = threading.Lock()
+        self._batch: tuple[float, float, float, float] | None = None  # start, end, speech, began
+        self._rate: float | None = None
+        self._shown = 0.0
+
+    def start_batch(self, start: float, end: float, speech: float, now: float) -> None:
+        with self._lock:
+            if self._batch is not None:
+                self._learn(now)
+            self._batch = (start, end, speech, now)
+
+    def _learn(self, now: float) -> None:
+        _, _, speech, began = self._batch
+        if speech > 0:
+            rate = (now - began) / speech
+            self._rate = rate if self._rate is None else (self._rate + rate) / 2
+
+    def estimate(self, now: float) -> float:
+        """How far along it probably is, as a fraction of the recording."""
+        with self._lock:
+            if self._batch is None or self.duration <= 0:
+                return self._shown
+            start, end, speech, began = self._batch
+            expected = max(1.0, speech * (self._rate or self.FIRST_GUESS))
+            done = (now - began) / expected
+            # Steady to 80 %, then slowing down so it never quite reaches the end.
+            share = done if done < 0.8 else 0.8 + 0.15 * (1 - math.exp(-(done - 0.8) / 0.5))
+            return max(self._shown, min(1.0, (start + (end - start) * share) / self.duration))
+
+    def show(self, fraction: float) -> None:
+        """Moves the bar to `fraction`, but never backwards. Called from both
+        the decoding and the pacing thread, hence the lock around reporting."""
+        with self._lock:
+            if fraction > self._shown:
+                self._shown = min(1.0, fraction)
+                self._progress(self._shown)
+
+
+# MARK: - Reading audio
+
+
+class UnreadableAudio(Exception):
+    pass
+
+
+def read_audio(path: str, decode_audio):
+    """The file as 16 kHz mono samples, with an explanation the user can act
+    on when it can't be read."""
+    import av
+
+    name = os.path.basename(path)
+    try:
+        empty = os.path.getsize(path) == 0
+    except OSError:
+        raise UnreadableAudio(f"“{name}” couldn't be found. It may have been moved or deleted.") from None
+    if empty:
+        raise UnreadableAudio(f"“{name}” is empty. If it's still downloading, wait until the download "
+                              "has finished and try again.")
+    try:
+        return decode_audio(path, sampling_rate=SAMPLE_RATE)
+    except av.error.InvalidDataError:
+        raise UnreadableAudio(f"“{name}” couldn't be read as audio. It may still be downloading, be "
+                              "damaged, or not be an audio file despite its name.") from None
+
+
 # MARK: - Loading
 
 
@@ -298,13 +385,37 @@ class Engine:
         from faster_whisper.audio import decode_audio
 
         # 16 kHz mono samples, shared by transcription and speaker detection.
-        audio = decode_audio(audio_path, sampling_rate=SAMPLE_RATE)
+        audio = read_audio(audio_path, decode_audio)
         duration = len(audio) / SAMPLE_RATE
 
         status("Step 1 of 2: Transcribing speech…" if with_speakers else f"Transcribing “{name}”…")
         progress(0.0)
         started = time.monotonic()
-        pieces, info = whisper.transcribe(
+        from faster_whisper import BatchedInferencePipeline
+
+        pacer = BatchPacer(duration, progress)
+
+        class Pipeline(BatchedInferencePipeline):
+            def forward(self, features, tokenizer, chunks_metadata, options):
+                # Called once per batch, before decoding it.
+                if cancel.is_set:
+                    raise Cancelled()
+                spans = [s for chunk in chunks_metadata for s in chunk["segments"]]
+                if spans:
+                    pacer.start_batch(spans[0]["start"] / SAMPLE_RATE, spans[-1]["end"] / SAMPLE_RATE,
+                                      sum(chunk["duration"] for chunk in chunks_metadata), time.monotonic())
+                return super().forward(features, tokenizer, chunks_metadata, options)
+
+        decoding = threading.Event()
+
+        def pace() -> None:
+            while not decoding.wait(0.25):
+                pacer.show(pacer.estimate(time.monotonic()))
+
+        # Decodes several stretches of speech at once, which uses the CPU far
+        # better: about twice as fast as one at a time. Each stretch is
+        # transcribed on its own, without the previous text as context.
+        pieces, info = Pipeline(whisper).transcribe(
             audio,
             language=None if language == AUTO_LANGUAGE else language,
             task="transcribe",
@@ -314,18 +425,26 @@ class Engine:
             # Word timings let speakers be matched word by word, so a speaker
             # change in the middle of a sentence is placed correctly.
             word_timestamps=with_speakers,
-            condition_on_previous_text=False,
+            # Sentence-length lines rather than one per 30-second batch item.
+            without_timestamps=False,
+            batch_size=BATCH_SIZE,
         )
         segments: list[Segment] = []
         words: list[Word] = []
-        for piece in pieces:  # decoding happens while iterating
-            if cancel.is_set:
-                raise Cancelled()
-            segments.append(Segment(piece.start, piece.end, None, piece.text))
-            for word in piece.words or []:
-                words.append(Word(word.start, word.end, word.word))
-            if duration > 0:
-                progress(min(1.0, piece.end / duration))
+        pacer_thread = threading.Thread(target=pace, daemon=True)
+        pacer_thread.start()
+        try:
+            for piece in pieces:  # decoding happens while iterating, a batch at a time
+                if cancel.is_set:
+                    raise Cancelled()
+                segments.append(Segment(piece.start, piece.end, None, piece.text))
+                for word in piece.words or []:
+                    words.append(Word(word.start, word.end, word.word))
+                if duration > 0:
+                    pacer.show(piece.end / duration)
+        finally:
+            decoding.set()
+            pacer_thread.join()
 
         if diarizer is not None:
             status("Step 2 of 2: Working out who is speaking…")

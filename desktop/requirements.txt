@@ -3,7 +3,7 @@ PySide6-Essentials>=6.7,<7
 faster-whisper>=1.1,<2
 sherpa-onnx>=1.12,<2
 sounddevice>=0.5,<1
-av>=12
+av>=12,<19  # 19 removed an argument that faster-whisper 1.2 still passes
 numpy>=1.26
 platformdirs>=4
 certifi

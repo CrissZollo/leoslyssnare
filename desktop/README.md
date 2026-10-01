@@ -4,8 +4,10 @@ The same app as the macOS version, for **Windows 10/11 (64-bit)** and **Linux (x
 
 - **Transcribe an existing file:** choose or drag in an `.m4a`, `.mp3`, `.wav` or other audio file.
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out. Everything is saved to **one** audio file, as **MP3 on Windows** and **Ogg (Opus) on Linux**, and when you stop, the app asks **“Transcribe the recording?”**.
-- **Who said what:** each part of the transcript is labelled *Speaker 1*, *Speaker 2*… You can rename them, for example to *Anna*, and the transcript updates everywhere.
+- **Who said what:** each part of the transcript is labelled *Speaker 1*, *Speaker 2*… You can rename them, for example to *Anna*, and the transcript updates everywhere. If one person was split into two speakers, merge them with the button next to the name (*Undo* is offered right after).
 - Transcripts get timestamps and are saved automatically as `.txt`, in the same format as the Mac app.
+- **Open a saved transcript:** *Open transcript…* (or drop a `.txt` on the window) shows it again, with its recording. The recording is found by the file name on the transcript's first line, next to the transcript, in the recordings folder or in Downloads; otherwise choose it with *Find audio file…*. Exact timings are kept in the app's data folder (`~/.local/share/LeosLyssnare/Transcript data`, `%LOCALAPPDATA%\LeosLyssnare\Transcript data`), so word-by-word following works after reopening too.
+- **Listen back:** press play under the transcript. The line being spoken is highlighted (word by word when speakers are identified) and kept in the middle of the view as it plays. Click any line to play from there. Scroll away to read elsewhere and *Back to playback* takes you back.
 
 On the Mac, the app uses Apple's Neural Engine through WhisperKit. That only exists on Apple hardware, so this version uses:
 
@@ -50,13 +52,19 @@ If double-clicking doesn't start it, your distribution may lack FUSE 2 (Ubuntu 2
    - **Small** (≈480 MB): faster, somewhat less accurate.
    - **Base** (≈150 MB): fastest, lowest quality.
 2. Click **Download models**. This downloads the speech model, plus the speaker recognition models (≈35 MB) if *Identify speakers* is on.
-3. When **“✔ Available offline”** appears, the app works without internet.
+3. When the green **“Available offline”** badge appears, the app works without internet.
 
 Speech models come from Hugging Face and speaker models from the sherpa-onnx GitHub releases. Behind a company proxy that inspects HTTPS, set `SSL_CERT_FILE` to your company's CA bundle.
 
+## Appearance
+
+The window follows the system's light or dark setting and looks the same on Windows and Linux (the Mac app uses the same palette and layout). The font is [Inter](https://rsms.me/inter/) (SIL Open Font License, included in `leoslyssnare/resources/fonts`).
+
+If your Linux desktop doesn't tell applications whether it's dark or light, choose the look yourself: `LEOSLYSSNARE_THEME=dark ./Leos_Lyssnare-x86_64.AppImage` (or `light`).
+
 ## Speed
 
-Everything runs on the CPU, so it's slower than on an M1's Neural Engine. With *Large v3 Turbo*, one hour of audio takes roughly **20–40 minutes** on a recent 8-core laptop, plus a few minutes to identify speakers. *Small* is about three times faster. The computer won't go to sleep by itself while it records or transcribes.
+Everything runs on the CPU, so it's slower than on an M1's Neural Engine. Speech is transcribed in batches of eight stretches at a time, which is about twice as fast as one at a time. With *Large v3 Turbo* on a desktop Intel Core i7-13700K, 45 minutes of audio takes about **6 minutes** to transcribe plus about **3 minutes** to identify speakers; laptops take longer. *Small* is about three times faster. Because of the batches, *Stop* can take up to half a minute to take effect. The computer won't go to sleep by itself while it records or transcribes.
 
 ## Recording format
 
