@@ -29,8 +29,10 @@ PORTAUDIO_LIB="$WORK/portaudio-install/lib/libportaudio.so.2"
 if [ ! -f "$PORTAUDIO_LIB" ]; then
     rm -rf "$WORK/portaudio"
     git clone --depth 1 --branch "$PORTAUDIO_VERSION" https://github.com/PortAudio/portaudio.git "$WORK/portaudio"
+    # CMAKE_POLICY_VERSION_MINIMUM: CMake 4 (Arch and other rolling distributions)
+    # refuses PortAudio 19.7's old cmake_minimum_required without it. Older CMake ignores it.
     cmake -S "$WORK/portaudio" -B "$WORK/portaudio/build" \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$WORK/portaudio-install" \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$WORK/portaudio-install" \
         -DCMAKE_INSTALL_LIBDIR=lib -DPA_USE_ALSA=ON -DPA_USE_JACK=OFF -DPA_BUILD_SHARED=ON -DPA_BUILD_STATIC=OFF
     cmake --build "$WORK/portaudio/build" --parallel
     cmake --install "$WORK/portaudio/build"
