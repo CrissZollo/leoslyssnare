@@ -38,6 +38,8 @@ open "build/Leos Lyssnare.app"
 
 You can drag `build/Leos Lyssnare.app` into **Applications**.
 
+An app you build yourself opens without any warning. If you downloaded the app from GitHub instead, see [Opening the Mac app from GitHub](#opening-the-mac-app-from-github).
+
 To work on the code, run `open Package.swift` to open the project in Xcode, then press ⌘R.
 
 ### Windows (installer and portable .zip)
@@ -114,11 +116,23 @@ The workflow in `.github/workflows/build.yml` builds the Mac app, the Windows in
 
   The Mac app, the installer, the `.zip` and the AppImage then appear under the repository's **Releases**.
 
-The Mac app from GitHub is only ad-hoc signed, not notarized by Apple, so macOS blocks it the first time ("can't be opened" or "is damaged"). After unzipping it and moving it to **Applications**, run this once:
+### Opening the Mac app from GitHub
 
-```sh
-xattr -dr com.apple.quarantine "/Applications/Leos Lyssnare.app"
-```
+Apple hasn't notarized the Mac app that GitHub builds (notarizing needs a paid Apple Developer account). So the first time you open it, macOS stops it with a message like *“Leos Lyssnare” can't be opened*, *Apple could not verify…* or *is damaged and can't be opened*. The app works fine. macOS just doesn't know who made it. You only have to do this once for each version you download:
+
+1. Download `Leos_Lyssnare-<version>-macos-arm64.zip` from the run's **Artifacts** or from **Releases**. A download from **Artifacts** is a zip inside a zip, so unzip until you have `Leos Lyssnare.app`.
+2. Drag `Leos Lyssnare.app` into **Applications**.
+3. Let macOS run it. Either way works:
+   - **Without Terminal:** double-click the app. When macOS stops it, click **Done** (or **OK**). Open **System Settings › Privacy & Security**, scroll down to *“Leos Lyssnare” was blocked…* and click **Open Anyway**. Enter your password, then click **Open Anyway** again. On macOS 14 Sonoma you can instead right-click the app, choose **Open**, then click **Open** again.
+   - **With Terminal:** run
+
+     ```sh
+     xattr -dr com.apple.quarantine "/Applications/Leos Lyssnare.app"
+     ```
+
+     and then open the app as usual. Use this if macOS says the app *is damaged*, because in that case **Open Anyway** doesn't appear.
+
+From then on, the app opens normally.
 
 ### Checking a build
 
