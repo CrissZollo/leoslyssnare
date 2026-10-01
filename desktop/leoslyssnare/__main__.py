@@ -64,6 +64,14 @@ def _self_test() -> int:
 
 
 def run() -> int:
+    # The first transcription makes tqdm (inside faster-whisper) create a
+    # multiprocessing lock, which starts multiprocessing's resource tracker by
+    # running sys.executable again. In a packaged app that's the app itself,
+    # so without this a second window opened. With it, that copy runs the
+    # tracker and nothing else.
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     _use_bundled_portaudio()
     if "--self-test" in sys.argv:
         # A windowed build has no console, so the result also goes to a file
