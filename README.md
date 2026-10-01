@@ -6,7 +6,7 @@ A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **
 
 - **Transcribe an existing file:** choose or drag in an `.m4a` file (`.mp3`, `.wav` and other common audio formats also work).
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out of the recording. Everything you record while unpaused is saved to **one** `.m4a` file.
-- When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Yes* to start transcribing right away.
+- When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Transcribe* to start right away.
 - **Who said what:** the app identifies different speakers (for example 8 people in a meeting) and labels each part of the transcript *Speaker 1*, *Speaker 2*, and so on. You can rename them, for example to *Anna*, and the transcript updates everywhere.
 - Transcripts are shown with timestamps and saved automatically as `.txt`.
 
@@ -147,7 +147,7 @@ Models are stored in `~/Library/Application Support/LeosLyssnare/Models`.
 ## Identifying speakers
 
 - Turn on **Identify speakers**. It is on by default.
-- **Number of speakers:** if you know how many people took part, for example 8, choose that number. It noticeably improves the result. *Detect automatically* also works but can merge or split people.
+- **Number of speakers:** if you know how many people took part, for example 8, choose that number. It noticeably improves the result. *Automatic* also works but can merge or split people.
 - Transcription then runs in two steps: first speech to text, then working out who is speaking. The second step takes much less time than the first.
 - The **Speakers** panel on the right lists every person found, with their total speaking time and the first thing they said. Type a name in the field and *Speaker 3* is replaced with that name everywhere. The saved `.txt` file is updated too.
 
