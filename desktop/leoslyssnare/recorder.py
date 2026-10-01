@@ -1,4 +1,5 @@
-"""Records the microphone to a single AAC `.m4a` file.
+"""Records the microphone to a single audio file in the platform's usual format:
+MP3 on Windows, Ogg (Opus) on Linux.
 
 The microphone stream stays open for the whole recording. While paused, the
 incoming audio is simply dropped, so the finished file contains every
@@ -11,12 +12,36 @@ import math
 import queue
 import sys
 import threading
+from dataclasses import dataclass
 
 import numpy as np
 
 from . import keepawake, paths
 
 IDLE, RECORDING, PAUSED = "idle", "recording", "paused"
+
+
+@dataclass(frozen=True)
+class RecordingFormat:
+    extension: str
+    container: str
+    codec: str
+    bit_rate: int
+    # Fixed encoder sample rate, or None to keep the microphone's own rate.
+    sample_rate: int | None = None
+
+
+# Both formats are streamable, so if the app or computer crashes mid-meeting,
+# everything recorded up to that point is still playable.
+MP3 = RecordingFormat(".mp3", "mp3", "libmp3lame", 128_000)
+# Opus only supports 48 kHz (among speech-friendly rates); the encoder resamples.
+OGG_OPUS = RecordingFormat(".ogg", "ogg", "libopus", 64_000, sample_rate=48_000)
+
+
+def platform_format() -> RecordingFormat:
+    """MP3 plays in every Windows app; Ogg is the native format on Linux desktops
+    (GNOME Sound Recorder, Audacity, browsers and media players all handle it)."""
+    return MP3 if sys.platform == "win32" else OGG_OPUS
 
 
 class RecorderError(Exception):
@@ -31,7 +56,8 @@ def _microphone_hint() -> str:
 
 
 class AudioRecorder:
-    def __init__(self) -> None:
+    def __init__(self, recording_format: RecordingFormat | None = None) -> None:
+        self.format = recording_format or platform_format()
         self.state = IDLE
         self.path: str | None = None
         self._stream = None
@@ -71,7 +97,7 @@ class AudioRecorder:
         except Exception as error:
             raise RecorderError(f"No microphone was found. {_microphone_hint()}") from error
 
-        self.path = paths.new_recording_path()
+        self.path = paths.new_recording_path(self.format.extension)
         self._frames = 0
         self._level = 0.0
         self._writer_error = None
@@ -137,9 +163,10 @@ class AudioRecorder:
         import av
 
         try:
-            container = av.open(path, mode="w", format="ipod")
-            stream = container.add_stream("aac", rate=sample_rate, layout="mono")
-            stream.bit_rate = 128_000
+            fmt = self.format
+            container = av.open(path, mode="w", format=fmt.container)
+            stream = container.add_stream(fmt.codec, rate=fmt.sample_rate or sample_rate, layout="mono")
+            stream.bit_rate = fmt.bit_rate
             pts = 0
             while (samples := chunks.get()) is not None:
                 frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="flt", layout="mono")

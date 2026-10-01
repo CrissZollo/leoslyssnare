@@ -39,8 +39,8 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H.%M.%S")
 
 
-def new_recording_path() -> str:
-    return os.path.join(recordings(), f"Meeting {_timestamp()}.m4a")
+def new_recording_path(extension: str) -> str:
+    return os.path.join(recordings(), f"Meeting {_timestamp()}{extension}")
 
 
 def transcript_path_for(audio_path: str) -> str:

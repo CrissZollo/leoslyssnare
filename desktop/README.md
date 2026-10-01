@@ -3,7 +3,7 @@
 The same app as the macOS version, for **Windows 10/11 (64-bit)** and **Linux (x86-64)**. It transcribes meetings **offline, on the computer**, and works out who said what.
 
 - **Transcribe an existing file:** choose or drag in an `.m4a`, `.mp3`, `.wav` or other audio file.
-- **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out. Everything is saved to **one** `.m4a` file, and when you stop, the app asks **“Transcribe the recording?”**.
+- **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out. Everything is saved to **one** audio file, as **MP3 on Windows** and **Ogg (Opus) on Linux**, and when you stop, the app asks **“Transcribe the recording?”**.
 - **Who said what:** each part of the transcript is labelled *Speaker 1*, *Speaker 2*… You can rename them, for example to *Anna*, and the transcript updates everywhere.
 - Transcripts get timestamps and are saved automatically as `.txt`, in the same format as the Mac app.
 
@@ -14,7 +14,7 @@ On the Mac, the app uses Apple's Neural Engine through WhisperKit. That only exi
 | Speech to text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2, int8 on the CPU) | OpenAI Whisper: Large v3 Turbo, Small or Base |
 | Who is speaking | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (ONNX Runtime) | pyannote segmentation 3.0 + WeSpeaker ResNet34 voice embeddings |
 | Interface | Qt 6 (PySide6) | – |
-| Recording | PortAudio (sounddevice), AAC encoding with FFmpeg (PyAV) | – |
+| Recording | PortAudio (sounddevice), MP3/Opus encoding with FFmpeg (PyAV) | – |
 
 No audio or text ever leaves the computer.
 
@@ -57,6 +57,19 @@ Speech models come from Hugging Face and speaker models from the sherpa-onnx Git
 ## Speed
 
 Everything runs on the CPU, so it's slower than on an M1's Neural Engine. With *Large v3 Turbo*, one hour of audio takes roughly **20–40 minutes** on a recent 8-core laptop, plus a few minutes to identify speakers. *Small* is about three times faster. The computer won't go to sleep by itself while it records or transcribes.
+
+## Recording format
+
+Recordings use the format each system handles best:
+
+| | Windows | Linux |
+|---|---|---|
+| File | `Meeting <date time>.mp3` | `Meeting <date time>.ogg` |
+| Codec | MP3, 128 kbit/s mono | Opus, 64 kbit/s mono |
+| Size per hour | ≈58 MB | ≈29 MB |
+| Opens in | Media Player, Groove, browsers, any audio app | GNOME/KDE players, VLC, Audacity, browsers |
+
+For speech, Opus at 64 kbit/s sounds as good as MP3 at twice the size. Both formats are written as a stream, so if the computer crashes or loses power during a meeting, everything recorded until then can still be played and transcribed. (The Mac app records `.m4a`; files from all three apps can be transcribed on any of them.)
 
 ## Where files are saved
 
@@ -117,7 +130,7 @@ desktop/
     app.py                      The window (Qt)
     engine.py                   Model downloads, transcription, speaker identification
     transcript.py               Transcript model, speaker turns, .txt format
-    recorder.py                 Recording with pause/resume into one .m4a
+    recorder.py                 Recording with pause/resume into one .mp3 / .ogg
     paths.py                    File locations
     keepawake.py                Stops the computer from sleeping while working
     resources/icon.png

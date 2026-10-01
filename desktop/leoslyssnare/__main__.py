@@ -38,16 +38,19 @@ def _self_test() -> int:
 
     print("PortAudio:", sounddevice.get_portaudio_version()[1])
 
+    from leoslyssnare.recorder import platform_format
+
+    fmt = platform_format()
     with tempfile.TemporaryDirectory() as folder:
-        path = os.path.join(folder, "test.m4a")
+        path = os.path.join(folder, "test" + fmt.extension)
         chunks = queue.Queue()
         chunks.put(np.zeros(48_000, dtype=np.float32))
         chunks.put(None)
-        recorder = AudioRecorder()
+        recorder = AudioRecorder(fmt)
         recorder._write(path, 48_000, chunks)
         if recorder._writer_error:
             raise recorder._writer_error
-        print("AAC round trip:", round(len(decode_audio(path)) / 16_000, 2), "s")
+        print(f"{fmt.codec} {fmt.extension} round trip:", round(len(decode_audio(path)) / 16_000, 2), "s")
 
     from PySide6.QtWidgets import QApplication
 
