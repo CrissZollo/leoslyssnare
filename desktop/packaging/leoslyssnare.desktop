@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Leos Lyssnare
+GenericName=Meeting transcription
+Comment=Record and transcribe meetings offline, with speaker identification
+Exec=LeosLyssnare %F
+Icon=leoslyssnare
+Terminal=false
+Categories=AudioVideo;Audio;Office;
+MimeType=audio/mp4;audio/x-m4a;audio/mpeg;audio/x-wav;audio/wav;audio/flac;audio/ogg;
+Keywords=transcribe;transcription;whisper;meeting;speech;
+StartupWMClass=LeosLyssnare

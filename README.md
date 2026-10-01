@@ -2,6 +2,8 @@
 
 A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **offline, on the device**.
 
+> **Windows and Linux:** there is also a version for Windows (installer or portable .zip) and Linux (AppImage) in [`desktop/`](desktop/README.md). It has the same features, uses faster-whisper and sherpa-onnx instead of Apple's Core ML, and is built automatically by GitHub Actions.
+
 - **Transcribe an existing file:** choose or drag in an `.m4a` file (`.mp3`, `.wav` and other common audio formats also work).
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out of the recording. Everything you record while unpaused is saved to **one** `.m4a` file.
 - When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Yes* to start transcribing right away.
@@ -91,4 +93,5 @@ Sources/LeosLyssnare/
   AppPaths.swift              File locations
 Support/Info.plist            App bundle settings, including microphone permission text
 scripts/build-app.sh          Builds and signs the .app
+desktop/                      Windows and Linux version (see desktop/README.md)
 ```

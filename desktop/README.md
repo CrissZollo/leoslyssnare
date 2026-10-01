@@ -1,0 +1,132 @@
+# Leos Lyssnare for Windows and Linux
+
+The same app as the macOS version, for **Windows 10/11 (64-bit)** and **Linux (x86-64)**. It transcribes meetings **offline, on the computer**, and works out who said what.
+
+- **Transcribe an existing file:** choose or drag in an `.m4a`, `.mp3`, `.wav` or other audio file.
+- **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out. Everything is saved to **one** `.m4a` file, and when you stop, the app asks **“Transcribe the recording?”**.
+- **Who said what:** each part of the transcript is labelled *Speaker 1*, *Speaker 2*… You can rename them, for example to *Anna*, and the transcript updates everywhere.
+- Transcripts get timestamps and are saved automatically as `.txt`, in the same format as the Mac app.
+
+On the Mac, the app uses Apple's Neural Engine through WhisperKit. That only exists on Apple hardware, so this version uses:
+
+| Job | Library | Model |
+|---|---|---|
+| Speech to text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2, int8 on the CPU) | OpenAI Whisper: Large v3 Turbo, Small or Base |
+| Who is speaking | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (ONNX Runtime) | pyannote segmentation 3.0 + WeSpeaker ResNet34 voice embeddings |
+| Interface | Qt 6 (PySide6) | – |
+| Recording | PortAudio (sounddevice), AAC encoding with FFmpeg (PyAV) | – |
+
+No audio or text ever leaves the computer.
+
+## Download and install
+
+Ready-made builds come from GitHub Actions (`.github/workflows/desktop.yml`):
+
+- Each run of the **Desktop app (Windows and Linux)** workflow attaches the builds to the run. Look under *Actions* and download the artifacts.
+- Pushing a tag such as `desktop-v1.0.0` also publishes them as a GitHub Release.
+
+### Windows
+
+- **Installer:** run `Leos_Lyssnare-<version>-windows-x64-setup.exe`. It installs for your user only, without administrator rights, and adds Leos Lyssnare to the Start menu.
+- **Portable:** unzip `Leos_Lyssnare-<version>-windows-x64.zip` anywhere and run `LeosLyssnare.exe`.
+
+The builds aren't code-signed, so Windows SmartScreen may warn the first time. Choose *More info › Run anyway*.
+
+### Linux (AppImage)
+
+```sh
+chmod +x Leos_Lyssnare-x86_64.AppImage
+./Leos_Lyssnare-x86_64.AppImage
+```
+
+The AppImage contains everything the app needs and runs on Ubuntu 22.04, Debian 12, Fedora 36 and newer, and similar distributions. It runs on X11 and on Wayland desktops. Recording goes through ALSA, which reaches PulseAudio and PipeWire on normal desktops.
+
+If double-clicking doesn't start it, your distribution may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`). Alternatively, run it with `--appimage-extract-and-run`.
+
+## First run: download the models once (the only step that needs internet)
+
+1. Pick a model:
+   - **Large v3 Turbo** (≈1.6 GB): best quality. Recommended for Swedish and for meetings.
+   - **Small** (≈480 MB): faster, somewhat less accurate.
+   - **Base** (≈150 MB): fastest, lowest quality.
+2. Click **Download models**. This downloads the speech model, plus the speaker recognition models (≈35 MB) if *Identify speakers* is on.
+3. When **“✔ Available offline”** appears, the app works without internet.
+
+Speech models come from Hugging Face and speaker models from the sherpa-onnx GitHub releases. Behind a company proxy that inspects HTTPS, set `SSL_CERT_FILE` to your company's CA bundle.
+
+## Speed
+
+Everything runs on the CPU, so it's slower than on an M1's Neural Engine. With *Large v3 Turbo*, one hour of audio takes roughly **20–40 minutes** on a recent 8-core laptop, plus a few minutes to identify speakers. *Small* is about three times faster. The computer won't go to sleep by itself while it records or transcribes.
+
+## Where files are saved
+
+| What | Windows | Linux |
+|---|---|---|
+| Recordings | `Documents\LeosLyssnare\Recordings` | `~/Documents/LeosLyssnare/Recordings` |
+| Transcripts | `Documents\LeosLyssnare\Transcripts` | `~/Documents/LeosLyssnare/Transcripts` |
+| Models | `%LOCALAPPDATA%\LeosLyssnare\Models` | `~/.local/share/LeosLyssnare/Models` |
+| Settings | Registry: `HKCU\Software\LeosLyssnare\LeosLyssnare` | `~/.config/LeosLyssnare/LeosLyssnare.conf` |
+
+## Microphone access
+
+- **Windows:** if recording fails, turn on **Settings › Privacy & security › Microphone › Let desktop apps access your microphone**.
+- **Linux:** the app records from the default input device. Pick the microphone in your sound settings.
+
+## Building it yourself
+
+Builds must be made on the target system: Windows builds on Windows, Linux builds on Linux.
+
+**Linux AppImage** (Debian/Ubuntu shown):
+
+```sh
+sudo apt install python3-venv cmake build-essential libasound2-dev curl git \
+  libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 libxkbcommon-x11-0
+cd desktop
+./packaging/build-appimage.sh            # → build/Leos_Lyssnare-x86_64.AppImage
+```
+
+The script builds its own PortAudio without JACK, so the AppImage doesn't depend on the user's audio packages.
+
+**Windows**: install 64-bit Python 3.11 or newer from python.org and, for the installer, [Inno Setup 6](https://jrsoftware.org/isinfo.php). Then:
+
+```powershell
+cd desktop
+powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1
+# → build\Leos_Lyssnare-<version>-windows-x64-setup.exe and a portable .zip
+```
+
+**Running from source** for development (Linux needs `libportaudio2` installed):
+
+```sh
+cd desktop
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt pytest
+python run.py
+python -m pytest tests
+```
+
+`LeosLyssnare --self-test` (or `python run.py --self-test`) loads every native library and round-trips a short recording without opening a window. CI uses it to check the packaged apps.
+
+## Project structure
+
+```
+desktop/
+  run.py                        Entry point
+  requirements.txt
+  leoslyssnare/
+    app.py                      The window (Qt)
+    engine.py                   Model downloads, transcription, speaker identification
+    transcript.py               Transcript model, speaker turns, .txt format
+    recorder.py                 Recording with pause/resume into one .m4a
+    paths.py                    File locations
+    keepawake.py                Stops the computer from sleeping while working
+    resources/icon.png
+  packaging/
+    leoslyssnare.spec           PyInstaller build (both platforms)
+    build-appimage.sh           Linux: PortAudio + PyInstaller + appimagetool
+    build-windows.ps1           Windows: PyInstaller + zip + Inno Setup installer
+    windows-installer.iss       Inno Setup script
+    leoslyssnare.desktop        Linux desktop entry
+    icon.svg, icon.ico          App icon (make_icons.py renders the PNG and ICO)
+  tests/
+```
