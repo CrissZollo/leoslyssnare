@@ -37,7 +37,30 @@ def resource_path(name: str) -> str:
     return theme.resource_path(name)
 
 
+def system_env() -> dict[str, str]:
+    """The environment for system programs the app starts. A PyInstaller build
+    points LD_LIBRARY_PATH at its own Qt, and Qt programs such as Dolphin or
+    kde-open fail to start when they load that instead of the system's."""
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original is None:
+            env.pop("LD_LIBRARY_PATH", None)
+        else:
+            env["LD_LIBRARY_PATH"] = original
+        for name in ("QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "QML2_IMPORT_PATH"):
+            env.pop(name, None)
+    return env
+
+
 def open_folder(path: str) -> None:
+    if sys.platform.startswith("linux"):
+        try:
+            subprocess.Popen(["xdg-open", path], env=system_env(), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return
+        except OSError:
+            pass  # no xdg-open: let Qt try
     QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 

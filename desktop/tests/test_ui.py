@@ -2,6 +2,7 @@
 and renaming a speaker updates the text. Skipped where Qt can't start."""
 
 import os
+import sys
 
 import pytest
 
@@ -210,3 +211,16 @@ def test_open_transcript_without_its_recording(window, tmp_path, monkeypatch):
     assert not window.play_button.isEnabled()
     assert window.find_audio_button.isVisibleTo(window)
     assert window.player_hint.text() == "Recording not found"
+
+
+def test_system_programs_get_the_systems_libraries(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/leoslyssnare/_internal")
+    monkeypatch.setenv("QT_PLUGIN_PATH", "/opt/leoslyssnare/_internal/PySide6/Qt/plugins")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    env = appmod.system_env()
+    assert "LD_LIBRARY_PATH" not in env and "QT_PLUGIN_PATH" not in env
+
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/local/lib")
+    env = appmod.system_env()
+    assert env["LD_LIBRARY_PATH"] == "/usr/local/lib" and "LD_LIBRARY_PATH_ORIG" not in env
