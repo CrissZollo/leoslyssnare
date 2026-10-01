@@ -2,31 +2,155 @@
 
 A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **offline, on the device**.
 
+> **Windows and Linux:** there is also a version for Windows (installer or portable .zip) and Linux (AppImage) in [`desktop/`](desktop/README.md). It has the same features, uses faster-whisper and sherpa-onnx instead of Apple's Core ML, and GitHub Actions builds it automatically, together with the Mac app.
+
 - **Transcribe an existing file:** choose or drag in an `.m4a` file (`.mp3`, `.wav` and other common audio formats also work).
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out of the recording. Everything you record while unpaused is saved to **one** `.m4a` file.
-- When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Yes* to start transcribing right away.
+- When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Transcribe* to start right away.
 - **Who said what:** the app identifies different speakers (for example 8 people in a meeting) and labels each part of the transcript *Speaker 1*, *Speaker 2*, and so on. You can rename them, for example to *Anna*, and the transcript updates everywhere.
 - Transcripts are shown with timestamps and saved automatically as `.txt`.
 
 Speech recognition uses [WhisperKit](https://github.com/argmaxinc/WhisperKit), which runs OpenAI's Whisper model on the Mac's Neural Engine through Core ML. Speaker identification uses SpeakerKit from the same package, which runs the pyannote speaker model the same way. No audio or text ever leaves the computer.
 
-## Requirements
+## Build
+
+Each version must be built on the system it's for: the Mac app on a Mac, the Windows app on Windows, and the Linux AppImage on Linux. If you don't want to build it yourself, GitHub builds all three for you ([see below](#let-github-build-the-apps)).
+
+First get the code:
+
+```sh
+git clone https://github.com/CrissZollo/leoslyssnare.git
+cd leoslyssnare
+```
+
+### macOS
+
+Requirements:
 
 - Mac with Apple Silicon (M1 or newer)
 - macOS 14 Sonoma or later
 - Xcode 15 or later (or the Xcode Command Line Tools: `xcode-select --install`)
 
-## Build
-
 ```sh
-cd leoslyssnare
 ./scripts/build-app.sh
 open "build/Leos Lyssnare.app"
 ```
 
 You can drag `build/Leos Lyssnare.app` into **Applications**.
 
+An app you build yourself opens without any warning. If you downloaded the app from GitHub instead, see [Opening the Mac app from GitHub](#opening-the-mac-app-from-github).
+
 To work on the code, run `open Package.swift` to open the project in Xcode, then press ⌘R.
+
+### Windows (installer and portable .zip)
+
+Requirements: Windows 10 or 11 (64-bit).
+
+1. Install **Python 3.11 or newer (64-bit)** from [python.org](https://www.python.org/downloads/windows/). In the installer, tick **“Add python.exe to PATH”**.
+2. Optional, for an installer (`setup.exe`): install **Inno Setup 6** from [jrsoftware.org](https://jrsoftware.org/isinfo.php), or run `winget install JRSoftware.InnoSetup`. Without it you still get a portable `.zip`.
+3. Open **PowerShell** in the `leoslyssnare` folder and run:
+
+   ```powershell
+   cd desktop
+   powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1
+   ```
+
+The first build downloads the dependencies and takes a few minutes. The results are in `desktop\build\`:
+
+- `Leos_Lyssnare-<version>-windows-x64-setup.exe`: the installer. It installs for your user only, without administrator rights.
+- `Leos_Lyssnare-<version>-windows-x64.zip`: the portable version. Unzip it anywhere and run `LeosLyssnare.exe`.
+
+### Linux (AppImage)
+
+Requirements: a 64-bit x86 Linux system. The AppImage runs on the distribution you build it on and on newer ones, so build on the oldest one you want to support.
+
+1. Install the build tools. On **Ubuntu or Debian** (tested on Ubuntu):
+
+   ```sh
+   sudo apt install python3-venv cmake build-essential libasound2-dev curl git \
+     libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 libxkbcommon-x11-0
+   ```
+
+   On **Fedora** (untested):
+
+   ```sh
+   sudo dnf install python3 cmake gcc gcc-c++ alsa-lib-devel curl git \
+     xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11
+   ```
+
+   On **Arch Linux**, Manjaro and EndeavourOS (untested):
+
+   ```sh
+   sudo pacman -S --needed python cmake base-devel alsa-lib curl git \
+     xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11
+   ```
+
+   Arch's own Python works: all the dependencies have packages for the newest Python versions.
+
+2. Build:
+
+   ```sh
+   cd desktop
+   ./packaging/build-appimage.sh
+   ```
+
+3. Run it:
+
+   ```sh
+   ./build/Leos_Lyssnare-x86_64.AppImage
+   ```
+
+The first build takes a few minutes, because it also downloads the dependencies and compiles the PortAudio audio library. The AppImage contains everything, so you can copy that one file to other Linux computers. If it doesn't start there, the computer may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`, Arch: `sudo pacman -S fuse2`). Alternatively, run it with `--appimage-extract-and-run`.
+
+### Let GitHub build the apps
+
+The workflow in `.github/workflows/build.yml` builds the Mac app, the Windows installer and `.zip`, and the Linux AppImage on GitHub's computers:
+
+- **Every merge to `main`:** all three are built. It also runs on pull requests that change one of the apps. Open the run under the repository's **Actions** tab. When it's done, download the files from **Artifacts** at the bottom of the page.
+- **A release:** push a tag that starts with `desktop-v`:
+
+  ```sh
+  git tag desktop-v1.0.0
+  git push origin desktop-v1.0.0
+  ```
+
+  The Mac app, the installer, the `.zip` and the AppImage then appear under the repository's **Releases**.
+
+### Opening the Mac app from GitHub
+
+Apple hasn't notarized the Mac app that GitHub builds (notarizing needs a paid Apple Developer account). So the first time you open it, macOS stops it with a message like *“Leos Lyssnare” can't be opened*, *Apple could not verify…* or *is damaged and can't be opened*. The app works fine. macOS just doesn't know who made it. You only have to do this once for each version you download:
+
+1. Download `Leos_Lyssnare-<version>-macos-arm64.zip` from the run's **Artifacts** or from **Releases**. A download from **Artifacts** is a zip inside a zip, so unzip until you have `Leos Lyssnare.app`.
+2. Drag `Leos Lyssnare.app` into **Applications**.
+3. Let macOS run it. Either way works:
+   - **Without Terminal:** double-click the app. When macOS stops it, click **Done** (or **OK**). Open **System Settings › Privacy & Security**, scroll down to *“Leos Lyssnare” was blocked…* and click **Open Anyway**. Enter your password, then click **Open Anyway** again. On macOS 14 Sonoma you can instead right-click the app, choose **Open**, then click **Open** again.
+   - **With Terminal:** run
+
+     ```sh
+     xattr -dr com.apple.quarantine "/Applications/Leos Lyssnare.app"
+     ```
+
+     and then open the app as usual. Use this if macOS says the app *is damaged*, because in that case **Open Anyway** doesn't appear.
+
+From then on, the app opens normally.
+
+### Checking a build
+
+`--self-test` loads every library the app needs and records and reads back a short test file, without opening a window:
+
+```sh
+./desktop/build/Leos_Lyssnare-x86_64.AppImage --self-test     # Linux: prints "Self-test passed."
+```
+
+On Windows, the app has no console. Run the check like this instead:
+
+```powershell
+$env:LEOSLYSSNARE_SELFTEST_LOG = "$PWD\selftest.log"
+Start-Process desktop\build\windows\dist\LeosLyssnare\LeosLyssnare.exe -ArgumentList "--self-test" -Wait
+Get-Content selftest.log
+```
+
+More about the Windows and Linux version, including how to run it from source while developing, is in [`desktop/README.md`](desktop/README.md).
 
 ## First run: download the models once (the only step that needs internet)
 
@@ -43,7 +167,7 @@ Models are stored in `~/Library/Application Support/LeosLyssnare/Models`.
 ## Identifying speakers
 
 - Turn on **Identify speakers**. It is on by default.
-- **Number of speakers:** if you know how many people took part, for example 8, choose that number. It noticeably improves the result. *Detect automatically* also works but can merge or split people.
+- **Number of speakers:** if you know how many people took part, for example 8, choose that number. It noticeably improves the result. *Automatic* also works but can merge or split people.
 - Transcription then runs in two steps: first speech to text, then working out who is speaking. The second step takes much less time than the first.
 - The **Speakers** panel on the right lists every person found, with their total speaking time and the first thing they said. Type a name in the field and *Speaker 3* is replaced with that name everywhere. The saved `.txt` file is updated too.
 
@@ -91,4 +215,5 @@ Sources/LeosLyssnare/
   AppPaths.swift              File locations
 Support/Info.plist            App bundle settings, including microphone permission text
 scripts/build-app.sh          Builds and signs the .app
+desktop/                      Windows and Linux version (see desktop/README.md)
 ```
