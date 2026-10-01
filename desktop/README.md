@@ -39,9 +39,9 @@ chmod +x Leos_Lyssnare-x86_64.AppImage
 ./Leos_Lyssnare-x86_64.AppImage
 ```
 
-The AppImage contains everything the app needs and runs on Ubuntu 22.04, Debian 12, Fedora 36 and newer, and similar distributions. It runs on X11 and on Wayland desktops. Recording goes through ALSA, which reaches PulseAudio and PipeWire on normal desktops.
+The AppImage contains everything the app needs and runs on Ubuntu 22.04, Debian 12, Fedora 36 and newer, Arch Linux, and similar distributions. It runs on X11 and on Wayland desktops. Recording goes through ALSA, which reaches PulseAudio and PipeWire on normal desktops.
 
-If double-clicking doesn't start it, your distribution may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`). Alternatively, run it with `--appimage-extract-and-run`.
+If double-clicking doesn't start it, your distribution may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`, Arch: `sudo pacman -S fuse2`). Alternatively, run it with `--appimage-extract-and-run`.
 
 ## First run: download the models once (the only step that needs internet)
 
@@ -98,6 +98,15 @@ cd desktop
 ./packaging/build-appimage.sh            # → build/Leos_Lyssnare-x86_64.AppImage
 ```
 
+On Arch Linux, install the tools with:
+
+```sh
+sudo pacman -S --needed python cmake base-devel alsa-lib curl git \
+  xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11
+```
+
+An AppImage built on Arch only runs on systems as new as the one it was built on. For one that runs everywhere, use the build from GitHub Actions, which is made on Ubuntu 22.04.
+
 The script builds its own PortAudio without JACK, so the AppImage doesn't depend on the user's audio packages.
 
 **Windows**: install 64-bit Python 3.11 or newer from python.org and, for the installer, [Inno Setup 6](https://jrsoftware.org/isinfo.php). Then:
@@ -108,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1
 # → build\Leos_Lyssnare-<version>-windows-x64-setup.exe and a portable .zip
 ```
 
-**Running from source** for development (Linux needs `libportaudio2` installed):
+**Running from source** for development (Linux needs PortAudio installed: `libportaudio2` on Debian/Ubuntu, `portaudio` on Arch):
 
 ```sh
 cd desktop

@@ -76,6 +76,15 @@ Requirements: a 64-bit x86 Linux system. The AppImage runs on the distribution y
      xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11
    ```
 
+   On **Arch Linux**, Manjaro and EndeavourOS (untested):
+
+   ```sh
+   sudo pacman -S --needed python cmake base-devel alsa-lib curl git \
+     xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11
+   ```
+
+   Arch's own Python works: all the dependencies have packages for the newest Python versions.
+
 2. Build:
 
    ```sh
@@ -89,7 +98,7 @@ Requirements: a 64-bit x86 Linux system. The AppImage runs on the distribution y
    ./build/Leos_Lyssnare-x86_64.AppImage
    ```
 
-The first build takes a few minutes, because it also downloads the dependencies and compiles the PortAudio audio library. The AppImage contains everything, so you can copy that one file to other Linux computers. If it doesn't start there, the computer may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`). Alternatively, run it with `--appimage-extract-and-run`.
+The first build takes a few minutes, because it also downloads the dependencies and compiles the PortAudio audio library. The AppImage contains everything, so you can copy that one file to other Linux computers. If it doesn't start there, the computer may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`, Arch: `sudo pacman -S fuse2`). Alternatively, run it with `--appimage-extract-and-run`.
 
 ### Let GitHub build Windows and Linux
 
