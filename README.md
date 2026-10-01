@@ -12,16 +12,26 @@ A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **
 
 Speech recognition uses [WhisperKit](https://github.com/argmaxinc/WhisperKit), which runs OpenAI's Whisper model on the Mac's Neural Engine through Core ML. Speaker identification uses SpeakerKit from the same package, which runs the pyannote speaker model the same way. No audio or text ever leaves the computer.
 
-## Requirements
+## Build
+
+Each version must be built on the system it's for: the Mac app on a Mac, the Windows app on Windows, and the Linux AppImage on Linux. If you don't want to build it yourself, GitHub can build the Windows and Linux versions for you ([see below](#let-github-build-windows-and-linux)).
+
+First get the code:
+
+```sh
+git clone https://github.com/CrissZollo/leoslyssnare.git
+cd leoslyssnare
+```
+
+### macOS
+
+Requirements:
 
 - Mac with Apple Silicon (M1 or newer)
 - macOS 14 Sonoma or later
 - Xcode 15 or later (or the Xcode Command Line Tools: `xcode-select --install`)
 
-## Build
-
 ```sh
-cd leoslyssnare
 ./scripts/build-app.sh
 open "build/Leos Lyssnare.app"
 ```
@@ -29,6 +39,89 @@ open "build/Leos Lyssnare.app"
 You can drag `build/Leos Lyssnare.app` into **Applications**.
 
 To work on the code, run `open Package.swift` to open the project in Xcode, then press ⌘R.
+
+### Windows (installer and portable .zip)
+
+Requirements: Windows 10 or 11 (64-bit).
+
+1. Install **Python 3.11 or newer (64-bit)** from [python.org](https://www.python.org/downloads/windows/). In the installer, tick **“Add python.exe to PATH”**.
+2. Optional, for an installer (`setup.exe`): install **Inno Setup 6** from [jrsoftware.org](https://jrsoftware.org/isinfo.php), or run `winget install JRSoftware.InnoSetup`. Without it you still get a portable `.zip`.
+3. Open **PowerShell** in the `leoslyssnare` folder and run:
+
+   ```powershell
+   cd desktop
+   powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1
+   ```
+
+The first build downloads the dependencies and takes a few minutes. The results are in `desktop\build\`:
+
+- `Leos_Lyssnare-<version>-windows-x64-setup.exe`: the installer. It installs for your user only, without administrator rights.
+- `Leos_Lyssnare-<version>-windows-x64.zip`: the portable version. Unzip it anywhere and run `LeosLyssnare.exe`.
+
+### Linux (AppImage)
+
+Requirements: a 64-bit x86 Linux system. The AppImage runs on the distribution you build it on and on newer ones, so build on the oldest one you want to support.
+
+1. Install the build tools. On **Ubuntu or Debian** (tested on Ubuntu):
+
+   ```sh
+   sudo apt install python3-venv cmake build-essential libasound2-dev curl git \
+     libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 libxkbcommon-x11-0
+   ```
+
+   On **Fedora** (untested):
+
+   ```sh
+   sudo dnf install python3 cmake gcc gcc-c++ alsa-lib-devel curl git \
+     xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11
+   ```
+
+2. Build:
+
+   ```sh
+   cd desktop
+   ./packaging/build-appimage.sh
+   ```
+
+3. Run it:
+
+   ```sh
+   ./build/Leos_Lyssnare-x86_64.AppImage
+   ```
+
+The first build takes a few minutes, because it also downloads the dependencies and compiles the PortAudio audio library. The AppImage contains everything, so you can copy that one file to other Linux computers. If it doesn't start there, the computer may lack FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`). Alternatively, run it with `--appimage-extract-and-run`.
+
+### Let GitHub build Windows and Linux
+
+The workflow in `.github/workflows/desktop.yml` builds and tests both versions on GitHub's computers:
+
+- **Any change:** it runs on every pull request and every push to `main` that touches `desktop/`. Open the run under the repository's **Actions** tab. When it's done, download the files from **Artifacts** at the bottom of the page.
+- **A release:** push a tag that starts with `desktop-v`:
+
+  ```sh
+  git tag desktop-v1.0.0
+  git push origin desktop-v1.0.0
+  ```
+
+  The installer, the `.zip` and the AppImage then appear under the repository's **Releases**.
+
+### Checking a build
+
+`--self-test` loads every library the app needs and records and reads back a short test file, without opening a window:
+
+```sh
+./desktop/build/Leos_Lyssnare-x86_64.AppImage --self-test     # Linux: prints "Self-test passed."
+```
+
+On Windows, the app has no console. Run the check like this instead:
+
+```powershell
+$env:LEOSLYSSNARE_SELFTEST_LOG = "$PWD\selftest.log"
+Start-Process desktop\build\windows\dist\LeosLyssnare\LeosLyssnare.exe -ArgumentList "--self-test" -Wait
+Get-Content selftest.log
+```
+
+More about the Windows and Linux version, including how to run it from source while developing, is in [`desktop/README.md`](desktop/README.md).
 
 ## First run: download the models once (the only step that needs internet)
 
