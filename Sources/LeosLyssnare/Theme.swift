@@ -6,10 +6,14 @@ import SwiftUI
 /// switches between its light and dark value with the system appearance.
 enum Theme {
     static func dynamic(_ light: UInt32, _ dark: UInt32) -> Color {
-        Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        Color(nsColor: dynamicNSColor(light, dark))
+    }
+
+    static func dynamicNSColor(_ light: UInt32, _ dark: UInt32) -> NSColor {
+        NSColor(name: nil, dynamicProvider: { appearance in
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             return NSColor(hex: isDark ? dark : light)
-        }))
+        })
     }
 
     static let canvas = dynamic(0xF1F3F8, 0x0D1117)
@@ -30,10 +34,10 @@ enum Theme {
     static let warn = dynamic(0xC77A0A, 0xF0A93B)
 
     /// One colour per speaker, in the order they first talk.
-    static let speakers: [Color] = [
-        dynamic(0x3D63DD, 0x7C9BFF), dynamic(0x0E8F7E, 0x4CC7B5), dynamic(0xC2610C, 0xF0A05A),
-        dynamic(0xC03A8E, 0xE879B9), dynamic(0x7B4FD9, 0xA98BFF), dynamic(0xCF3F3F, 0xFF7B7B),
-        dynamic(0x5B7083, 0x9DB0C4), dynamic(0x2E8B3E, 0x6FD17E),
+    static let speakers: [Color] = speakerHex.map { dynamic($0.light, $0.dark) }
+    private static let speakerHex: [(light: UInt32, dark: UInt32)] = [
+        (0x3D63DD, 0x7C9BFF), (0x0E8F7E, 0x4CC7B5), (0xC2610C, 0xF0A05A), (0xC03A8E, 0xE879B9),
+        (0x7B4FD9, 0xA98BFF), (0xCF3F3F, 0xFF7B7B), (0x5B7083, 0x9DB0C4), (0x2E8B3E, 0x6FD17E),
     ]
     /// Text on top of a speaker colour.
     static let speakerInk = dynamic(0xFFFFFF, 0x0D1117)
@@ -41,6 +45,32 @@ enum Theme {
     static func speakerColor(_ speaker: Int?) -> Color {
         guard let speaker else { return muted }
         return speakers[(speaker - 1 + speakers.count * 100) % speakers.count]
+    }
+
+    /// The same colours for AppKit, which draws the transcript text.
+    enum NS {
+        static let ink = dynamicNSColor(0x131A26, 0xE8ECF4)
+        static let muted = dynamicNSColor(0x5F6B7F, 0x98A2B5)
+        /// Behind the line being played.
+        static let playing = dynamicNSColor(0xE8EEFD, 0x1E2A4D)
+        /// Behind the word being said: brandSoft with some brand mixed in.
+        static let playingWord = dynamicNSColor(mix(0xE8EEFD, 0x2F5BD8, 0.32), mix(0x1E2A4D, 0x7C9BFF, 0.42))
+        static let speakers: [NSColor] = speakerHex.map { dynamicNSColor($0.light, $0.dark) }
+
+        static func speakerColor(_ speaker: Int?) -> NSColor {
+            guard let speaker else { return muted }
+            return speakers[(speaker - 1 + speakers.count * 100) % speakers.count]
+        }
+    }
+
+    /// `amount` of the way from colour `a` to colour `b`.
+    static func mix(_ a: UInt32, _ b: UInt32, _ amount: Double) -> UInt32 {
+        func channel(_ shift: UInt32) -> UInt32 {
+            let from = Double((a >> shift) & 0xFF)
+            let to = Double((b >> shift) & 0xFF)
+            return UInt32((from + (to - from) * amount).rounded()) << shift
+        }
+        return channel(16) | channel(8) | channel(0)
     }
 }
 

@@ -187,7 +187,11 @@ final class Transcriber: ObservableObject {
     @Published private(set) var statusText = ""
     /// 0...1 while working; nil when idle. 0 shows an indeterminate spinner.
     @Published private(set) var progress: Double?
-    @Published private(set) var transcript: Transcript?
+    @Published private(set) var transcript: Transcript? {
+        didSet { revision += 1 }
+    }
+    /// Goes up with every change to the transcript, so views can tell when to redraw it.
+    @Published private(set) var revision = 0
     @Published var errorMessage: String?
 
     private var whisper: WhisperKit?
@@ -483,6 +487,28 @@ final class Transcriber: ObservableObject {
         beforeEdit = (transcript.segments, transcript.speakerNames)
         undoText = "Merged \(transcript.name(for: source)) into \(transcript.name(for: target))."
         transcript.mergeSpeakers(source, into: target)
+        self.transcript = transcript
+        saveQuietly()
+    }
+
+    /// Gives the selected text to `speaker`, or to a new one with nil.
+    /// Returns the speaker it went to.
+    @discardableResult
+    func moveText(from first: (line: Int, offset: Int), to last: (line: Int, offset: Int), to speaker: Int?) -> Int? {
+        guard var transcript else { return nil }
+        let before = (transcript.segments, transcript.speakerNames)
+        guard let movedTo = transcript.moveText(from: first, to: last, to: speaker) else { return nil }
+        beforeEdit = before
+        undoText = "Moved the text to \(transcript.name(for: movedTo))."
+        self.transcript = transcript
+        saveQuietly()
+        return movedTo
+    }
+
+    /// Connects the transcript to its recording by hand, when it wasn't found.
+    func setRecording(_ url: URL) {
+        guard var transcript else { return }
+        transcript.sourceURL = url
         self.transcript = transcript
         saveQuietly()
     }

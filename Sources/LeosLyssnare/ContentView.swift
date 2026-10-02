@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var recorder = AudioRecorder()
     @StateObject private var sources = SourcesModel()
+    @StateObject private var player = TranscriptPlayer()
     @StateObject private var transcriber = Transcriber()
 
     @StateObject private var ui = ViewState()
@@ -31,6 +32,12 @@ struct ContentView: View {
         .background(Theme.canvas)
         // Files dropped anywhere on the window, not only on the file card.
         .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
+        .background(WindowCloseGuard())
+        .onAppear { RecordingGuard.recorder = recorder }
+        // A new transcript, or its recording found: get the recording ready to play.
+        .onChange(of: transcriber.transcript.map { [$0.sourceURL, $0.savedURL] }) { _, _ in
+            openRecording()
+        }
         .onReceive(tick) { _ in
             ui.record(level: recorder.level, state: recorder.state)
             sources.tick(idle: recorder.state == .idle)
@@ -219,6 +226,8 @@ struct ContentView: View {
                 switch recorder.state {
                 case .idle:
                     Button {
+                        // Otherwise the microphone would pick up the playback.
+                        player.pause()
                         let microphone = sources.microphone.isEmpty ? nil : sources.microphone
                         let application = sources.application.isEmpty ? nil : sources.application
                         Task { await recorder.start(microphone: microphone, application: application) }
@@ -483,18 +492,51 @@ struct ContentView: View {
             Rectangle().fill(Theme.line).frame(height: 1)
 
             HStack(alignment: .top, spacing: 20) {
-                ScrollView {
-                    transcriptText(transcript)
-                        .lineSpacing(6)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.trailing, 8)
-                }
+                TranscriptTextView(
+                    transcript: transcript,
+                    revision: transcriber.revision,
+                    showTimestamps: ui.showTimestamps,
+                    position: player.shownPosition,
+                    follow: player.follow,
+                    canJump: player.url != nil,
+                    onJump: { player.seek($0) },
+                    onUserScroll: { player.follow = false },
+                    onMove: { first, last, speaker in
+                        let movedTo = transcriber.moveText(from: first, to: last, to: speaker)
+                        // Ready to type the new speaker's name.
+                        if movedTo != nil, speaker == nil { ui.showSpeakers = true }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if transcript.hasSpeakers && ui.showSpeakers {
                     speakersPanel(transcript)
                 }
             }
+
+            Rectangle().fill(Theme.line).frame(height: 1)
+
+            PlayerBar(player: player, transcript: transcript, canPlay: recorder.state == .idle,
+                      onFindAudio: chooseRecording)
         }
+    }
+
+    private func openRecording() {
+        if let transcript = transcriber.transcript {
+            player.open(transcript.sourceURL, transcriptLength: transcript.segments.last?.end ?? 0)
+        } else {
+            player.close()
+        }
+    }
+
+    /// Connects a transcript to its recording by hand, when it wasn't found.
+    private func chooseRecording() {
+        guard let transcript = transcriber.transcript else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.directoryURL = transcript.savedURL?.deletingLastPathComponent() ?? AppPaths.recordings
+        panel.message = "Find “\(transcript.sourceURL.lastPathComponent)”"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        transcriber.setRecording(url)
     }
 
     private func chips(for transcript: Transcript) -> [String] {
@@ -511,41 +553,6 @@ struct ContentView: View {
         return result
     }
 
-    /// The transcript as one piece of text, so it can be selected in one go.
-    /// Speaker names get their colour, timestamps are quiet.
-    private func transcriptText(_ transcript: Transcript) -> Text {
-        let body = Font.system(size: 15)
-        let small = Font.system(size: 12)
-        var result = Text("")
-        if transcript.hasSpeakers {
-            for segment in transcript.segments {
-                var head = Text(transcript.name(for: segment.speaker))
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Theme.speakerColor(segment.speaker))
-                if ui.showTimestamps {
-                    let time = Text("  " + Transcript.timestamp(segment.start)).font(small).foregroundColor(Theme.muted)
-                    head = head + time
-                }
-                let line = Text(segment.text).font(body).foregroundColor(Theme.ink)
-                result = result + head
-                result = result + Text("\n")
-                result = result + line
-                result = result + Text("\n\n")
-            }
-        } else if ui.showTimestamps {
-            for segment in transcript.segments {
-                let time = Text(Transcript.timestamp(segment.start) + "   ").font(small).foregroundColor(Theme.muted)
-                let line = Text(segment.text).font(body).foregroundColor(Theme.ink)
-                result = result + time
-                result = result + line
-                result = result + Text("\n")
-            }
-        } else {
-            result = Text(transcript.text(withTimestamps: false)).font(body).foregroundColor(Theme.ink)
-        }
-        return result
-    }
-
     /// Lists the detected speakers so they can be given real names.
     private func speakersPanel(_ transcript: Transcript) -> some View {
         let total = max(transcript.speakers.reduce(0.0) { $0 + transcript.speakingTime(for: $1) }, 1)
@@ -553,7 +560,7 @@ struct ContentView: View {
             Text("Speakers (\(transcript.speakers.count))")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(Theme.ink)
-            Text("Type a name to replace “Speaker N” everywhere. Two speakers that are really one person can be merged.")
+            Text("Type a name to replace “Speaker N” everywhere. Two speakers that are really one person can be merged. Text that someone else said: select it and right-click.")
                 .font(.system(size: 12))
                 .foregroundColor(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)

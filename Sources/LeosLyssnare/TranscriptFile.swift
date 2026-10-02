@@ -36,6 +36,54 @@ extension Transcript {
         }
     }
 
+    /// Gives a stretch of text to another speaker: `speaker`, or with nil a new
+    /// one. `first` and `last` are (line, offset) in the lines' text, in
+    /// UTF-16 units as NSString counts them, `last` just after the end; a cut
+    /// word counts as wholly inside.
+    ///
+    /// The text becomes a line of its own, joined with the line before or
+    /// after if that's already the speaker's. What came before it stays where
+    /// it was, and what came after it gets a line of its own with the speaker
+    /// it had. Times are split with the words when they're known, otherwise
+    /// in proportion to the text. Returns the speaker the text went to, or nil
+    /// when nothing was selected.
+    mutating func moveText(from first: (line: Int, offset: Int), to last: (line: Int, offset: Int),
+                           to speaker: Int?) -> Int? {
+        let (a, b) = (first.line, last.line)
+        guard a <= b, segments.indices.contains(a), segments.indices.contains(b) else { return nil }
+        let firstOffset = TextPiece.wordStart(segments[a].text, first.offset)
+        let lastOffset = TextPiece.wordEnd(segments[b].text, last.offset)
+
+        let before = TextPiece.piece(segments[a], 0, firstOffset)
+        let after = TextPiece.piece(segments[b], lastOffset, TextPiece.length(segments[b].text))
+        let chosen = (a...b).compactMap { i in
+            TextPiece.piece(segments[i], i == a ? firstOffset : 0, i == b ? lastOffset : TextPiece.length(segments[i].text))
+        }
+        guard !chosen.isEmpty else { return nil }
+        let target = speaker ?? (speakers.max() ?? 0) + 1
+        let moved = TextPiece.join(chosen, speaker: target)
+
+        // Joined with the neighbours when they're the same speaker, like speaker turns.
+        var lines: [(segment: TranscriptSegment, isMoved: Bool)] = []
+        if let before { lines.append((before, false)) }
+        lines.append((moved, true))
+        if let after { lines.append((after, false)) }
+        if b + 1 < segments.count { lines.append((segments[b + 1], false)) }
+        var result = Array(segments[..<a])
+        var lastIsMoved = false
+        for (line, isMoved) in lines {
+            if let previous = result.last, previous.speaker == line.speaker, isMoved || lastIsMoved {
+                result[result.count - 1] = TextPiece.join([previous, line], speaker: line.speaker)
+                lastIsMoved = true
+            } else {
+                result.append(line)
+                lastIsMoved = isMoved
+            }
+        }
+        segments = result + segments.dropFirst(b + 2)
+        return target
+    }
+
     // MARK: - Saving
 
     /// Writes the .txt file, and the exact timings (which the .txt rounds to
@@ -235,5 +283,93 @@ extension Transcript {
             return nil
         }
         return Int(ns.substring(with: match.range(at: 1)))
+    }
+}
+
+/// Cutting a line's text by UTF-16 offsets, as NSTextView counts them.
+enum TextPiece {
+    static func length(_ text: String) -> Int { (text as NSString).length }
+
+    private static func isSpace(_ text: NSString, _ index: Int) -> Bool {
+        guard let scalar = Unicode.Scalar(text.character(at: index)) else { return false }
+        return CharacterSet.whitespacesAndNewlines.contains(scalar)
+    }
+
+    /// Where a selection starting at `index` really starts: at the beginning
+    /// of the word it cuts, or of the next word when it starts between words.
+    static func wordStart(_ text: String, _ index: Int) -> Int {
+        let ns = text as NSString
+        var i = max(0, min(index, ns.length))
+        if i < ns.length, isSpace(ns, i) {
+            while i < ns.length, isSpace(ns, i) { i += 1 }
+            return i
+        }
+        while i > 0, !isSpace(ns, i - 1) { i -= 1 }
+        return i
+    }
+
+    /// Where a selection ending at `index` really ends: after the word it
+    /// cuts, or after the previous word when it ends between words.
+    static func wordEnd(_ text: String, _ index: Int) -> Int {
+        let ns = text as NSString
+        var i = max(0, min(index, ns.length))
+        if i > 0, isSpace(ns, i - 1) {
+            while i > 0, isSpace(ns, i - 1) { i -= 1 }
+            return i
+        }
+        while i < ns.length, !isSpace(ns, i) { i += 1 }
+        return i
+    }
+
+    /// Where each timed word starts in the line's text. One that can't be
+    /// found counts as where the previous one ended.
+    static func wordOffsets(_ segment: TranscriptSegment) -> [Int] {
+        let ns = segment.text as NSString
+        var offsets: [Int] = []
+        var offset = 0
+        for word in segment.words {
+            let text = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let found = text.isEmpty
+                ? NSNotFound
+                : ns.range(of: text, range: NSRange(location: offset, length: ns.length - offset)).location
+            if found != NSNotFound {
+                offset = found + (text as NSString).length
+                offsets.append(found)
+            } else {
+                offsets.append(offset)
+            }
+        }
+        return offsets
+    }
+
+    /// Offsets first..<last of a line as a line of its own, timed by its
+    /// words, or else in proportion to its text.
+    static func piece(_ segment: TranscriptSegment, _ first: Int, _ last: Int) -> TranscriptSegment? {
+        let ns = segment.text as NSString
+        let lower = max(0, min(first, ns.length))
+        let upper = max(lower, min(last, ns.length))
+        let text = ns.substring(with: NSRange(location: lower, length: upper - lower))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if lower == 0 && upper >= ns.length { return segment }
+        let words = zip(segment.words, wordOffsets(segment)).filter { lower <= $0.1 && $0.1 < upper }.map(\.0)
+        let start: Double
+        let end: Double
+        if let firstWord = words.first, let lastWord = words.last {
+            start = firstWord.start
+            end = lastWord.end
+        } else {
+            let duration = segment.end - segment.start
+            let length = Double(ns.length)
+            start = segment.start + duration * Double(lower) / length
+            end = segment.start + duration * Double(upper) / length
+        }
+        return TranscriptSegment(start: start, end: end, speaker: segment.speaker, text: text, words: words)
+    }
+
+    static func join(_ segments: [TranscriptSegment], speaker: Int?) -> TranscriptSegment {
+        TranscriptSegment(start: segments.map(\.start).min() ?? 0, end: segments.map(\.end).max() ?? 0,
+                          speaker: speaker, text: segments.map(\.text).joined(separator: " "),
+                          words: segments.flatMap(\.words))
     }
 }
