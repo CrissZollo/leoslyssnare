@@ -26,7 +26,7 @@ No audio or text ever leaves the computer.
 Ready-made builds come from GitHub Actions (`.github/workflows/build.yml`):
 
 - Every merge to `main` runs the **Build apps** workflow, which attaches the builds to the run. Look under *Actions* and download the artifacts.
-- Pushing a tag such as `desktop-v1.0.0` also publishes them as a GitHub Release.
+- Pushing a tag such as `desktop-v0.1.2` also publishes them as a GitHub Release. Set the same version in `leoslyssnare/__init__.py` and `../Support/Info.plist` first: the files are named after it, and the build stops if they don't match the tag.
 
 ### Windows
 

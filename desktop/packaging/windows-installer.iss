@@ -1,7 +1,7 @@
 ; Inno Setup script for Leos Lyssnare. Called by build-windows.ps1, which
 ; passes AppVersion and SourceDir (the PyInstaller output folder).
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "0.1.2"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\build\windows\dist\LeosLyssnare"

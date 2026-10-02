@@ -1,3 +1,3 @@
 """Leos Lyssnare for Windows and Linux: offline meeting transcription."""
 
-__version__ = "1.0.0"
+__version__ = "0.1.2"
