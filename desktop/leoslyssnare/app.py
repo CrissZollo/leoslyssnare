@@ -13,7 +13,8 @@ import time
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QSettings, Qt, QTimer, QUrl, QVariantAnimation,
                             Signal)
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QPixmap, QTextCharFormat, QTextCursor
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPixmap, QTextCharFormat,
+                           QTextCursor)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSizePolicy,
                                QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
@@ -117,8 +118,8 @@ class MainWindow(QMainWindow):
         self.cancel_flag: engine.CancelFlag | None = None
         self.speaker_edits: dict[int, QLineEdit] = {}
         self.speaker_avatars: dict[int, Avatar] = {}
-        # The transcript as it was before the last merge, for Undo.
-        self.before_merge: tuple[list, dict] | None = None
+        # The transcript as it was before the last merge or moved text, for Undo.
+        self.before_edit: tuple[list, dict] | None = None
 
         self.player = AudioPlayer()
         # Where each segment's text sits in the transcript view, as character
@@ -849,7 +850,8 @@ class MainWindow(QMainWindow):
         self.speakers_title = label("", "cardTitle")
         panel.addWidget(self.speakers_title)
         panel.addWidget(label("Type a name to replace “Speaker N” everywhere. Two speakers that are "
-                              "really one person can be merged.", "caption", wrap=True))
+                              "really one person can be merged. Text that someone else said: select it "
+                              "and right-click.", "caption", wrap=True))
         panel.addSpacing(8)
         self.undo_bar = QFrame()
         self.undo_bar.setObjectName("undoBar")
@@ -860,7 +862,7 @@ class MainWindow(QMainWindow):
         self.undo_label.setMinimumWidth(0)
         undo.addWidget(self.undo_label, 1)
         undo_button = Button("Undo", None, "link")
-        undo_button.clicked.connect(self._undo_merge)
+        undo_button.clicked.connect(self._undo)
         undo.addWidget(undo_button)
         self.undo_bar.hide()
         panel.addWidget(self.undo_bar)
@@ -882,6 +884,8 @@ class MainWindow(QMainWindow):
         card.body.addWidget(self.result_view, 1)
 
         self.text_view.viewport().installEventFilter(self)
+        self.text_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.text_view.customContextMenuRequested.connect(self._text_menu)
         # Fires for the user's own scrolling (wheel, keys, scroll bar), not for ours.
         self.text_view.verticalScrollBar().actionTriggered.connect(self._on_user_scroll)
         self.scroll_animation = QVariantAnimation(self)
@@ -926,9 +930,9 @@ class MainWindow(QMainWindow):
             self.speakers_layout.addWidget(self._speaker_entry(transcript, speaker, total))
         self.speakers_layout.addStretch(1)
         if reload_audio:
-            self.before_merge = None
+            self.before_edit = None
             self._load_audio(transcript)
-        self.undo_bar.setVisible(self.before_merge is not None)
+        self.undo_bar.setVisible(self.before_edit is not None)
         self._refresh_timeline()
         self._render_text()
 
@@ -988,19 +992,79 @@ class MainWindow(QMainWindow):
         if self.transcript is None:
             return
         source_name, target_name = self.transcript.name(source), self.transcript.name(target)
-        self.before_merge = (copy.deepcopy(self.transcript.segments), dict(self.transcript.speaker_names))
+        self._remember_for_undo()
         self.transcript.merge_speakers(source, target)
         self._save_quietly()
         self.undo_label.setText(f"Merged {source_name} into {target_name}.")
         self._show_transcript(reload_audio=False)
 
-    def _undo_merge(self) -> None:
-        if self.transcript is None or self.before_merge is None:
+    def _remember_for_undo(self) -> None:
+        self.before_edit = (copy.deepcopy(self.transcript.segments), dict(self.transcript.speaker_names))
+
+    def _undo(self) -> None:
+        if self.transcript is None or self.before_edit is None:
             return
-        self.transcript.segments, self.transcript.speaker_names = self.before_merge
-        self.before_merge = None
+        self.transcript.segments, self.transcript.speaker_names = self.before_edit
+        self.before_edit = None
         self._save_quietly()
         self._show_transcript(reload_audio=False)
+
+    def _text_menu(self, point) -> None:
+        menu = self._build_text_menu(point)
+        menu.exec(self.text_view.viewport().mapToGlobal(point))
+        menu.deleteLater()
+
+    def _build_text_menu(self, point) -> QMenu:
+        """The usual Copy and Select All, and for selected text in a
+        transcript with speakers: giving it to another speaker."""
+        menu = self.text_view.createStandardContextMenu(point)
+        selection = self._selected_text_range()
+        if selection is not None:
+            first_action = menu.actions()[0] if menu.actions() else None
+            transcript = self.transcript
+            speakers = QMenu("Move to speaker", menu)
+            for speaker in transcript.speakers:
+                action = speakers.addAction(self._speaker_icon(speaker), transcript.name(speaker))
+                action.triggered.connect(lambda _=False, s=speaker: self._move_text(*selection, s))
+            new = QAction("Move to a new speaker", menu)
+            new.triggered.connect(lambda: self._move_text(*selection, None))
+            menu.insertMenu(first_action, speakers)
+            menu.insertAction(first_action, new)
+            menu.insertSeparator(first_action)
+        return menu
+
+    def _selected_text_range(self) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        """The selection as (line, character) at each end, or None when
+        nothing in a transcript with speakers is selected."""
+        cursor = self.text_view.textCursor()
+        if self.transcript is None or not self.transcript.has_speakers or not cursor.hasSelection():
+            return None
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        lines = list(enumerate(self.segment_spans))
+        # A selection that starts in a speaker's name or time starts with the
+        # line below them, and one that ends there ends with the line above.
+        first = next(((i, max(0, start - begin)) for i, (begin, finish) in lines if start <= finish), None)
+        last = next(((i, min(finish, end) - begin) for i, (begin, finish) in reversed(lines) if end >= begin), None)
+        if first is None or last is None or first > last:
+            return None
+        return first, last
+
+    def _move_text(self, first: tuple[int, int], last: tuple[int, int], speaker: int | None) -> None:
+        """Gives the selected text to `speaker`, or to a new one with None."""
+        if self.transcript is None:
+            return
+        self._remember_for_undo()
+        moved_to = self.transcript.move_text(first, last, speaker)
+        if moved_to is None:
+            self.before_edit = None
+            return
+        self._save_quietly()
+        self.undo_label.setText(f"Moved the text to {self.transcript.name(moved_to)}.")
+        self._show_transcript(reload_audio=False)
+        if speaker is None and moved_to in self.speaker_edits:
+            # Ready to type the new speaker's name.
+            self.speakers_toggle.setChecked(True)
+            self.speaker_edits[moved_to].setFocus()
 
     def _transcript_html(self) -> str:
         t = theme.current()

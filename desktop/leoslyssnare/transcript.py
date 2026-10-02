@@ -138,6 +138,47 @@ class Transcript:
         if name and not self.speaker_names.get(target, "").strip():
             self.speaker_names[target] = name
 
+    def move_text(self, first: tuple[int, int], last: tuple[int, int], speaker: int | None = None) -> int | None:
+        """Gives a stretch of text to another speaker: `speaker`, or with None a
+        new one. `first` and `last` are (line, character) in the lines' text,
+        `last` just after the end; a cut word counts as wholly inside.
+
+        The text becomes a line of its own, joined with the line before or
+        after if that's already the speaker's. What came before it stays where
+        it was, and what came after it gets a line of its own with the speaker
+        it had. Times are split with the words when they're known, otherwise
+        in proportion to the text. Returns the speaker the text went to, or
+        None when nothing was selected."""
+        (a, first_char), (b, last_char) = first, last
+        for segment in self.segments[a:b + 1]:
+            segment.text = " ".join(segment.text.split())
+        first_char = _word_start(self.segments[a].text, first_char)
+        last_char = _word_end(self.segments[b].text, last_char)
+
+        before = _piece(self.segments[a], 0, first_char)
+        after = _piece(self.segments[b], last_char, len(self.segments[b].text))
+        chosen = [_piece(self.segments[i], first_char if i == a else 0,
+                         last_char if i == b else len(self.segments[i].text)) for i in range(a, b + 1)]
+        chosen = [piece for piece in chosen if piece is not None]
+        if not chosen:
+            return None
+        if speaker is None:
+            speaker = max(self.speakers, default=0) + 1
+        moved = _join(chosen, speaker)
+
+        lines = [piece for piece in (before, moved, after) if piece is not None]
+        # Joined with the neighbours when they're the same speaker, like speaker turns.
+        result = self.segments[:a]
+        for line in lines + self.segments[b + 1:b + 2]:
+            if result and result[-1].speaker == line.speaker and (line is moved or result[-1] is moved):
+                result[-1] = _join([result[-1], line], line.speaker)
+                if line is moved:
+                    moved = result[-1]
+            else:
+                result.append(line)
+        self.segments = result + self.segments[b + 2:]
+        return speaker
+
     def to_data(self) -> dict:
         return {
             "version": 1,
@@ -156,6 +197,67 @@ class Transcript:
                     for s in data["segments"]]
         return cls(data["source_path"], segments, data["language"], data["processing_time"],
                    data["has_speakers"], {int(k): v for k, v in data["speaker_names"].items()})
+
+
+def _word_start(text: str, index: int) -> int:
+    """Where a selection starting at `index` really starts: at the beginning
+    of the word it cuts, or of the next word when it starts between words."""
+    index = max(0, min(index, len(text)))
+    if index < len(text) and text[index].isspace():
+        while index < len(text) and text[index].isspace():
+            index += 1
+        return index
+    while index > 0 and not text[index - 1].isspace():
+        index -= 1
+    return index
+
+
+def _word_end(text: str, index: int) -> int:
+    """Where a selection ending at `index` really ends: after the word it
+    cuts, or after the previous word when it ends between words."""
+    index = max(0, min(index, len(text)))
+    if index > 0 and text[index - 1].isspace():
+        while index > 0 and text[index - 1].isspace():
+            index -= 1
+        return index
+    while index < len(text) and not text[index].isspace():
+        index += 1
+    return index
+
+
+def _word_offsets(segment: Segment) -> list[int]:
+    """Where each timed word starts in the segment's text. One that can't be
+    found counts as where the previous one ended."""
+    offsets, offset = [], 0
+    for word in segment.words:
+        text = word.text.strip()
+        found = segment.text.find(text, offset) if text else -1
+        if found >= 0:
+            offset = found + len(text)
+        offsets.append(found if found >= 0 else offset)
+    return offsets
+
+
+def _piece(segment: Segment, first: int, last: int) -> Segment | None:
+    """Characters first..last of a segment as a segment of their own, timed
+    by its words, or else in proportion to its text."""
+    text = segment.text[first:last].strip()
+    if not text:
+        return None
+    if first == 0 and last >= len(segment.text):
+        return Segment(segment.start, segment.end, segment.speaker, segment.text, list(segment.words))
+    words = [word for word, at in zip(segment.words, _word_offsets(segment)) if first <= at < last]
+    if words:
+        start, end = words[0].start, words[-1].end
+    else:
+        duration, length = segment.end - segment.start, len(segment.text)
+        start, end = segment.start + duration * first / length, segment.start + duration * last / length
+    return Segment(start, end, segment.speaker, text, words)
+
+
+def _join(segments: list[Segment], speaker: int | None) -> Segment:
+    return Segment(min(s.start for s in segments), max(s.end for s in segments), speaker,
+                   " ".join(s.text for s in segments), [w for s in segments for w in s.words])
 
 
 def timestamp(seconds: float) -> str:
