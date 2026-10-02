@@ -8,8 +8,9 @@ A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out of the recording. Everything you record while unpaused is saved to **one** `.m4a` file.
 - **Record both sides of a call:** choose the microphone, and under *Also record sound from* choose the app the meeting is in (Teams, Zoom, a browser…) or *All sound from this Mac*. The app's sound is mixed with the microphone into the same recording, so the people you're talking to are transcribed too. An app shows up in the list once it plays sound; if you choose it before the call starts, it's picked up as soon as it does. Wear headphones, otherwise the microphone hears the call from the speakers as well. Recording an app's sound needs macOS 14.2 or later.
 - When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Transcribe* to start right away.
-- **Who said what:** the app identifies different speakers (for example 8 people in a meeting) and labels each part of the transcript *Speaker 1*, *Speaker 2*, and so on. You can rename them, for example to *Anna*, and the transcript updates everywhere.
-- Transcripts are shown with timestamps and saved automatically as `.txt`.
+- **Who said what:** the app identifies different speakers (for example 8 people in a meeting) and labels each part of the transcript *Speaker 1*, *Speaker 2*, and so on. You can rename them, for example to *Anna*, and the transcript updates everywhere. If one person was split into two speakers, merge them with the button next to the name (*Undo* is offered right after).
+- Transcripts are shown with timestamps and saved automatically as `.txt`, in the same format as the Windows and Linux app.
+- **Open a saved transcript:** *Open transcript…* (or drop a `.txt` on the window) shows it again. Its recording is looked for by the file name on the transcript's first line: where it was, next to the transcript, in the recordings folder and in Downloads. The exact word timings are kept in `~/Library/Application Support/LeosLyssnare/Transcript data`, so they come back when a transcript is reopened.
 
 Speech recognition uses [WhisperKit](https://github.com/argmaxinc/WhisperKit), which runs OpenAI's Whisper model on the Mac's Neural Engine through Core ML. Speaker identification uses SpeakerKit from the same package, which runs the pyannote speaker model the same way. No audio or text ever leaves the computer.
 
@@ -220,6 +221,7 @@ Sources/LeosLyssnare/
   AudioSources.swift          Lists the microphones and the apps playing sound
   SourcePickers.swift         The microphone and app pickers
   Transcriber.swift           Model download/loading, transcription and speaker identification
+  TranscriptFile.swift        Saving and reading back transcripts, merging speakers
   AppPaths.swift              File locations
 Support/Info.plist            App bundle settings, including the permission texts
 scripts/build-app.sh          Builds and signs the .app

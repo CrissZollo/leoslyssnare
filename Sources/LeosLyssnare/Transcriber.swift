@@ -32,20 +32,31 @@ struct LanguageOption: Identifiable, Hashable {
     ]
 }
 
+struct TranscriptWord: Equatable {
+    var start: Double
+    var end: Double
+    var text: String
+}
+
 /// One line of the transcript. With speaker detection on, each line is a
 /// speaker turn: consecutive speech by the same person is merged together.
 struct TranscriptSegment: Identifiable {
     let id = UUID()
-    let start: Double
+    var start: Double
     var end: Double
     /// 1-based, numbered in the order people first speak. nil means unknown.
-    let speaker: Int?
+    var speaker: Int?
     var text: String
+    /// When each word is said, for following along during playback. Only
+    /// known with speaker detection on; the texts appear in order in `text`.
+    var words: [TranscriptWord] = []
 }
 
+/// Same model and .txt format as `Transcript` in the Windows and Linux app
+/// (desktop/leoslyssnare/transcript.py); TranscriptFile.swift reads it back.
 struct Transcript {
-    let sourceURL: URL
-    let segments: [TranscriptSegment]
+    var sourceURL: URL
+    var segments: [TranscriptSegment]
     let language: String?
     let processingTime: TimeInterval
     let hasSpeakers: Bool
@@ -394,11 +405,13 @@ final class Transcriber: ObservableObject {
                     statusText = "Transcription stopped."
                     return
                 }
-                segments = Self.speakerTurns(diarization: diarization, transcription: results)
+                segments = Self.withWords(Self.speakerTurns(diarization: diarization, transcription: results),
+                                          from: results)
             } else {
                 segments = Self.plainSegments(results)
             }
 
+            beforeEdit = nil
             var transcript = Transcript(
                 sourceURL: url,
                 segments: segments,
@@ -410,7 +423,7 @@ final class Transcriber: ObservableObject {
             // Save automatically to ~/Documents/LeosLyssnare/Transcripts.
             let saveURL = AppPaths.transcriptURL(for: url)
             do {
-                try transcript.fileContents().write(to: saveURL, atomically: true, encoding: .utf8)
+                try transcript.save(to: saveURL)
                 transcript.savedURL = saveURL
             } catch {
                 errorMessage = "Transcription finished but couldn't be saved: \(error.localizedDescription)"
@@ -434,8 +447,59 @@ final class Transcriber: ObservableObject {
         guard var transcript else { return }
         transcript.speakerNames[speaker] = name
         self.transcript = transcript
-        if let savedURL = transcript.savedURL {
-            try? transcript.fileContents().write(to: savedURL, atomically: true, encoding: .utf8)
+        saveQuietly()
+    }
+
+    // MARK: - Opening and editing
+
+    /// Shows a saved .txt transcript, with its exact timings when they were
+    /// kept, and its recording when it can be found.
+    func openTranscript(url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            var transcript = try Transcript.load(url: url)
+            // The recording usually has the same name as in the transcript's first line.
+            if let audio = AppPaths.findAudio(transcript.sourceURL, transcript: url) {
+                transcript.sourceURL = audio
+            }
+            beforeEdit = nil
+            self.transcript = transcript
+        } catch {
+            errorMessage = (error as? TranscriptFileError)?.errorDescription
+                ?? "The transcript couldn't be opened: \(error.localizedDescription)"
+        }
+    }
+
+    /// What Undo would bring back, and what it says it undoes.
+    @Published private(set) var undoText: String?
+    private var beforeEdit: (segments: [TranscriptSegment], names: [Int: String])? {
+        didSet { if beforeEdit == nil { undoText = nil } }
+    }
+
+    /// `source` is the same person as `target`: one speaker from now on.
+    func mergeSpeakers(_ source: Int, into target: Int) {
+        guard var transcript else { return }
+        beforeEdit = (transcript.segments, transcript.speakerNames)
+        undoText = "Merged \(transcript.name(for: source)) into \(transcript.name(for: target))."
+        transcript.mergeSpeakers(source, into: target)
+        self.transcript = transcript
+        saveQuietly()
+    }
+
+    func undo() {
+        guard var transcript, let beforeEdit else { return }
+        transcript.segments = beforeEdit.segments
+        transcript.speakerNames = beforeEdit.names
+        self.beforeEdit = nil
+        self.transcript = transcript
+        saveQuietly()
+    }
+
+    /// Keeps the saved file in step with renames and merges.
+    private func saveQuietly() {
+        if let transcript, let savedURL = transcript.savedURL {
+            try? transcript.save(to: savedURL)
         }
     }
 
@@ -457,6 +521,32 @@ final class Transcriber: ObservableObject {
                 guard !text.isEmpty else { return nil }
                 return TranscriptSegment(start: Double(segment.start), end: Double(segment.end), speaker: nil, text: text)
             }
+    }
+
+    /// Gives each speaker turn the timed words said during it, so playback can
+    /// follow word by word and text can be split between speakers by time.
+    /// A word belongs to the turn its middle falls in, or else the nearest one.
+    private static func withWords(_ turns: [TranscriptSegment], from results: [TranscriptionResult]) -> [TranscriptSegment] {
+        let words = results
+            .flatMap(\.segments)
+            .flatMap { $0.words ?? [] }
+            .map { TranscriptWord(start: Double($0.start), end: Double($0.end),
+                                  text: $0.word.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.text.isEmpty }
+            .sorted { $0.start < $1.start }
+        guard !turns.isEmpty else { return turns }
+        var result = turns
+        for word in words {
+            let middle = (word.start + word.end) / 2
+            let index = result.firstIndex { middle >= $0.start && middle <= $0.end }
+                ?? result.indices.min { distance(middle, result[$0]) < distance(middle, result[$1]) }!
+            result[index].words.append(word)
+        }
+        return result
+    }
+
+    private static func distance(_ time: Double, _ segment: TranscriptSegment) -> Double {
+        time < segment.start ? segment.start - time : max(0, time - segment.end)
     }
 
     /// Matches words to speakers, renumbers speakers in the order they first

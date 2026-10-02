@@ -32,5 +32,7 @@
 	<string>Leos Lyssnare records the sound of the app your meeting is in, so the other people in it are transcribed too. Nothing leaves the computer.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>Recordings and transcripts are saved in Documents/LeosLyssnare.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>When you open a transcript, Leos Lyssnare looks for its recording in Downloads too.</string>
 </dict>
 </plist>

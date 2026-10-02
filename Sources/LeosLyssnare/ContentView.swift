@@ -29,6 +29,8 @@ struct ContentView: View {
         .padding(EdgeInsets(top: 16, leading: 24, bottom: 24, trailing: 24))
         .frame(minWidth: 1000, idealWidth: 1180, minHeight: 640, idealHeight: 780)
         .background(Theme.canvas)
+        // Files dropped anywhere on the window, not only on the file card.
+        .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
         .onReceive(tick) { _ in
             ui.record(level: recorder.level, state: recorder.state)
             sources.tick(idle: recorder.state == .idle)
@@ -91,6 +93,14 @@ struct ContentView: View {
                 .disabled(transcriber.isBusy)
                 .help("One-time download that needs internet. After that, everything runs offline.")
             }
+
+            Button {
+                chooseTranscript()
+            } label: {
+                Label("Open transcript…", systemImage: "doc.text")
+            }
+            .buttonStyle(GhostButtonStyle())
+            .help("Open a saved transcript, with its recording if it can be found")
 
             Button {
                 NSWorkspace.shared.open(AppPaths.recordings)
@@ -317,15 +327,29 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $ui.isDropTargeted, perform: handleDrop)
     }
 
+    /// A .txt is a saved transcript to show; anything else is audio to transcribe.
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
             guard let url else { return }
             Task { @MainActor in
-                await transcriber.transcribe(url: url)
+                if url.pathExtension.lowercased() == "txt" {
+                    transcriber.openTranscript(url: url)
+                } else {
+                    await transcriber.transcribe(url: url)
+                }
             }
         }
         return true
+    }
+
+    private func chooseTranscript() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.directoryURL = AppPaths.transcripts
+        panel.message = "Open a transcript"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        transcriber.openTranscript(url: url)
     }
 
     // MARK: - Status
@@ -392,8 +416,8 @@ struct ContentView: View {
             Text("Everything stays on this computer.")
                 .font(.system(size: 13))
                 .foregroundColor(Theme.muted)
-            Button("Open recordings folder") {
-                NSWorkspace.shared.open(AppPaths.recordings)
+            Button("Open a saved transcript") {
+                chooseTranscript()
             }
             .buttonStyle(.link)
             .padding(.top, 6)
@@ -481,7 +505,9 @@ struct ContentView: View {
         if let last = transcript.segments.last {
             result.append("\(Transcript.timestamp(last.end)) long")
         }
-        result.append("done in \(Transcript.timestamp(transcript.processingTime))")
+        if transcript.processingTime > 0 {  // unknown for an opened .txt
+            result.append("done in \(Transcript.timestamp(transcript.processingTime))")
+        }
         return result
     }
 
@@ -527,10 +553,25 @@ struct ContentView: View {
             Text("Speakers (\(transcript.speakers.count))")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(Theme.ink)
-            Text("Type a name to replace “Speaker N” everywhere.")
+            Text("Type a name to replace “Speaker N” everywhere. Two speakers that are really one person can be merged.")
                 .font(.system(size: 12))
                 .foregroundColor(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let undoText = transcriber.undoText {
+                HStack(spacing: 8) {
+                    Text(undoText)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Undo") { transcriber.undo() }
+                        .buttonStyle(.link)
+                }
+                .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 8))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.brandSoft))
+                .padding(.top, 8)
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -554,8 +595,11 @@ struct ContentView: View {
         return HStack(alignment: .top, spacing: 10) {
             SpeakerAvatar(speaker: speaker, name: transcript.speakerNames[speaker] ?? "")
             VStack(alignment: .leading, spacing: 5) {
-                TextField("Speaker \(speaker)", text: speakerNameBinding(speaker))
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 6) {
+                    TextField("Speaker \(speaker)", text: speakerNameBinding(speaker))
+                        .textFieldStyle(.roundedBorder)
+                    mergeMenu(transcript, speaker: speaker)
+                }
                 ShareBar(speaker: speaker, share: share)
                 Text("\(Transcript.timestamp(seconds)) · \(Int((share * 100).rounded())) %")
                     .font(.system(size: 12))
@@ -567,6 +611,29 @@ struct ContentView: View {
                     .foregroundColor(Theme.muted)
                     .lineLimit(3)
             }
+        }
+    }
+
+    /// "Same person as another speaker? Merge them."
+    @ViewBuilder
+    private func mergeMenu(_ transcript: Transcript, speaker: Int) -> some View {
+        let others = transcript.speakers.filter { $0 != speaker }
+        if !others.isEmpty {
+            Menu {
+                Text("\(transcript.name(for: speaker)) is the same person as…")
+                Divider()
+                ForEach(others, id: \.self) { other in
+                    Button(transcript.name(for: other)) {
+                        transcriber.mergeSpeakers(speaker, into: other)
+                    }
+                }
+            } label: {
+                Image(systemName: "arrow.triangle.merge")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Same person as another speaker? Merge them")
         }
     }
 
