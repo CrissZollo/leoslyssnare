@@ -109,17 +109,8 @@ The first build takes a few minutes, because it also downloads the dependencies 
 
 The workflow in `.github/workflows/build.yml` builds the Mac app, the Windows installer and `.zip`, and the Linux AppImage on GitHub's computers:
 
-- **Every merge to `main`:** all three are built. It also runs on pull requests that change one of the apps. Open the run under the repository's **Actions** tab. When it's done, download the files from **Artifacts** at the bottom of the page.
-- **A release:** first set the new version in `desktop/leoslyssnare/__init__.py` (`__version__`) and in `Support/Info.plist` (`CFBundleShortVersionString` and `CFBundleVersion`). The files are named after it. Then push a tag that starts with `desktop-v` and the same version:
-
-  ```sh
-  git tag desktop-v0.1.2
-  git push origin desktop-v0.1.2
-  ```
-
-  If the tag and the versions in the code differ, the build stops before anything is published.
-
-  The Mac app, the installer, the `.zip` and the AppImage then appear under the repository's **Releases**.
+- **Pull requests** (and runs started by hand from the **Actions** tab): all three are built and checked, nothing is published. Open the run under the repository's **Actions** tab. When it's done, the files are under **Artifacts** at the bottom of the page.
+- **Every merge to `main`:** all three are built, and once they all pass they're published under the repository's **Releases** as `desktop-v<version>`. The version comes from the code: `desktop/leoslyssnare/__init__.py` (`__version__`) and `Support/Info.plist` (`CFBundleShortVersionString` and `CFBundleVersion`), which must say the same, and the files are named after it. Raise it before merging: a version that's already released isn't published again, and the run says so with a warning.
 
 ### Opening the Mac app from GitHub
 

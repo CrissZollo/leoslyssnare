@@ -1,10 +1,11 @@
 name: Build apps (macOS, Windows and Linux)
 
-# Every merge to main builds all three versions. Download them from the run's Artifacts.
+# Every merge to main builds all three versions and, once all of them pass,
+# publishes them as a GitHub Release of the version in the code. Pull requests
+# and manual runs only build and check; their files are under the run's Artifacts.
 on:
   push:
     branches: [main]
-    tags: ["desktop-v*"]
   pull_request:
     paths:
       - "desktop/**"
@@ -21,6 +22,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         working-directory: desktop
@@ -29,18 +32,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Version matches the release tag
-        # The release files are named after the versions in the code, not the tag.
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
+      - name: Version
+        # The files are named after it, and the release is tagged desktop-v<version>.
+        id: version
         run: |
-          TAG="${GITHUB_REF_NAME#desktop-v}"
           DESKTOP=$(python -c "import leoslyssnare; print(leoslyssnare.__version__)")
           MAC=$(/usr/bin/sed -n '/CFBundleShortVersionString/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' ../Support/Info.plist)
-          echo "Tag $TAG · desktop/leoslyssnare/__init__.py $DESKTOP · Support/Info.plist $MAC"
-          if [ "$DESKTOP" != "$TAG" ] || [ "$MAC" != "$TAG" ]; then
-            echo "::error::Set the version to $TAG in desktop/leoslyssnare/__init__.py and Support/Info.plist before tagging."
+          echo "desktop/leoslyssnare/__init__.py $DESKTOP · Support/Info.plist $MAC"
+          if [ "$DESKTOP" != "$MAC" ]; then
+            echo "::error::The versions differ: $DESKTOP in desktop/leoslyssnare/__init__.py, $MAC in Support/Info.plist."
             exit 1
           fi
+          echo "version=$DESKTOP" >> "$GITHUB_OUTPUT"
       - name: System packages
         # The libraries Qt needs to start, so the window tests run instead of failing to import.
         run: |
@@ -139,17 +142,38 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: [linux, windows, macos]
+    # Only for main, and only once every build has passed.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, linux, windows, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+      TAG: desktop-v${{ needs.test.outputs.version }}
     steps:
+      - name: Already released?
+        # A version is released once; a merge without a new version only builds.
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::warning::$TAG is already released, so nothing was published. Raise the version in desktop/leoslyssnare/__init__.py and Support/Info.plist to publish a new release."
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v4
+        if: steps.existing.outputs.released == 'false'
         with:
           path: artifacts
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
+        if: steps.existing.outputs.released == 'false'
         with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Leos Lyssnare ${{ env.VERSION }}
           files: artifacts/*
           generate_release_notes: true
