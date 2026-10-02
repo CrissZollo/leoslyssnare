@@ -7,6 +7,9 @@ import Foundation
 /// closing the file. Resuming appends to the same file, so the finished
 /// recording contains every unpaused part back to back and none of the
 /// paused time.
+///
+/// With another microphone than the default, or another app's sound mixed in
+/// (the meeting app, say), MixingRecorder does the recording instead.
 @MainActor
 final class AudioRecorder: ObservableObject {
     enum State {
@@ -19,15 +22,26 @@ final class AudioRecorder: ObservableObject {
     /// Input level in 0...1 for the meter.
     @Published private(set) var level: Float = 0
     @Published var errorMessage: String?
+    /// Whether the chosen app's sound is being recorded right now.
+    @Published private(set) var hearingApp = false
+    /// The app being recorded along with the microphone, if any.
+    @Published private(set) var application: String?
 
     private var recorder: AVAudioRecorder?
+    private var mixer: MixingRecorder?
     private var timer: Timer?
     private var activity: NSObjectProtocol?
 
-    func start() async {
+    /// `microphone` is a Core Audio device UID (nil: the default one), and
+    /// `application` an AudioSources.App id or AudioSources.allSound.
+    func start(microphone: String? = nil, application: String? = nil) async {
         guard state == .idle else { return }
         guard await Self.requestMicrophoneAccess() else {
             errorMessage = "Leos Lyssnare doesn't have microphone access. Allow it in System Settings › Privacy & Security › Microphone."
+            return
+        }
+        if microphone != nil || application != nil {
+            startMixing(microphone: microphone, application: application)
             return
         }
 
@@ -59,16 +73,44 @@ final class AudioRecorder: ObservableObject {
         }
     }
 
+    private func startMixing(microphone: String?, application: String?) {
+        let mixer = MixingRecorder(url: AppPaths.newRecordingURL(), microphoneUID: microphone, application: application)
+        do {
+            try mixer.start()
+        } catch {
+            errorMessage = "Couldn't start recording: \(error.localizedDescription)"
+            return
+        }
+        self.mixer = mixer
+        self.application = application
+        elapsed = 0
+        state = .recording
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "Recording a meeting"
+        )
+        startTimer()
+    }
+
     func pause() {
-        guard state == .recording, let recorder else { return }
-        recorder.pause()
+        guard state == .recording else { return }
+        if let mixer {
+            mixer.paused = true
+        } else if let recorder {
+            recorder.pause()
+        } else {
+            return
+        }
         level = 0
         state = .paused
     }
 
     func resume() {
-        guard state == .paused, let recorder else { return }
-        if recorder.record() {
+        guard state == .paused else { return }
+        if let mixer {
+            mixer.paused = false
+            state = .recording
+        } else if let recorder, recorder.record() {
             state = .recording
         } else {
             errorMessage = "Couldn't resume recording."
@@ -77,12 +119,24 @@ final class AudioRecorder: ObservableObject {
 
     /// Finishes the file and returns its location.
     func stop() -> URL? {
-        guard state != .idle, let recorder else { return nil }
-        // Read the length before stop(), which resets currentTime.
-        elapsed = recorder.currentTime
-        recorder.stop()
-        let url = recorder.url
-        self.recorder = nil
+        guard state != .idle else { return nil }
+        let url: URL
+        if let mixer {
+            elapsed = mixer.elapsed
+            if let error = mixer.stop() {
+                errorMessage = "Part of the recording couldn't be saved: \(error.localizedDescription)"
+            }
+            url = mixer.url
+            self.mixer = nil
+        } else if let recorder {
+            // Read the length before stop(), which resets currentTime.
+            elapsed = recorder.currentTime
+            recorder.stop()
+            url = recorder.url
+            self.recorder = nil
+        } else {
+            return nil
+        }
         timer?.invalidate()
         timer = nil
         if let activity {
@@ -90,6 +144,8 @@ final class AudioRecorder: ObservableObject {
             self.activity = nil
         }
         level = 0
+        hearingApp = false
+        application = nil
         state = .idle
         return url
     }
@@ -102,6 +158,13 @@ final class AudioRecorder: ObservableObject {
     }
 
     private func tick() {
+        if let mixer {
+            hearingApp = mixer.isHearingApp
+            guard state == .recording else { return }
+            elapsed = mixer.elapsed
+            level = mixer.level
+            return
+        }
         guard state == .recording, let recorder else { return }
         elapsed = recorder.currentTime
         recorder.updateMeters()

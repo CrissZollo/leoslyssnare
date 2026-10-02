@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Leos Lyssnare records meetings with the microphone so they can be transcribed on this Mac. Nothing leaves the computer.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Leos Lyssnare records the sound of the app your meeting is in, so the other people in it are transcribed too. Nothing leaves the computer.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>Recordings and transcripts are saved in Documents/LeosLyssnare.</string>
 </dict>

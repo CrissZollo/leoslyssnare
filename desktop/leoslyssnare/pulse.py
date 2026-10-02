@@ -1,6 +1,6 @@
 """Linux sound through PulseAudio or PipeWire (which speaks the same protocol):
 lists the microphones and the apps that are playing sound, and captures
-either one.
+either one. See sources.py for how it's used.
 
 It uses the sound server's own command-line tools, pactl and parec, which
 every desktop with PulseAudio or PipeWire has. Capturing an app means
@@ -15,29 +15,13 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections import deque
-from dataclasses import dataclass
 
 import numpy as np
 
 from .paths import system_env
+from .sources import ALL_SOUND, Application, Microphone
 
 RATE = 48_000
-# Instead of one app: everything the computer plays.
-ALL_SOUND = "@all@"
-
-
-@dataclass(frozen=True)
-class Microphone:
-    name: str  # the sound server's name for it, used to record
-    description: str
-
-
-@dataclass(frozen=True)
-class Application:
-    key: str  # the program, so new streams from the same app are found too
-    name: str
-
 
 def _tool(name: str) -> str | None:
     return shutil.which(name) if sys.platform.startswith("linux") else None
@@ -46,6 +30,10 @@ def _tool(name: str) -> str | None:
 def available() -> bool:
     """Whether microphones and apps can be chosen here."""
     return bool(_tool("pactl") and _tool("parec")) and _pactl("info") is not None
+
+
+def can_record_apps() -> bool:
+    return True
 
 
 def _pactl(*args: str) -> str | None:
@@ -119,12 +107,13 @@ def applications() -> list[Application]:
 
 
 class Capture:
-    """One parec process delivering mono float samples at RATE to a callback,
-    on its own thread."""
+    """One parec process delivering mono float samples to a callback, on its
+    own thread."""
 
-    def __init__(self, source_args: list[str], on_audio) -> None:
+    def __init__(self, source_args: list[str], on_audio, rate: int = RATE) -> None:
         self._args = source_args
         self._on_audio = on_audio
+        self._rate = rate
         self._process: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
         self.started = threading.Event()  # the first audio has arrived
@@ -132,7 +121,7 @@ class Capture:
 
     def start(self) -> None:
         self._process = subprocess.Popen(
-            [_tool("parec") or "parec", *self._args, "--raw", "--format=float32le", f"--rate={RATE}",
+            [_tool("parec") or "parec", *self._args, "--raw", "--format=float32le", f"--rate={self._rate}",
              "--channels=1", "--latency-msec=20", "--client-name=Leos Lyssnare"],
             env=system_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self._thread = threading.Thread(target=self._read, daemon=True)
@@ -168,138 +157,16 @@ class Capture:
         self.started.set()
 
 
-class _JitterBuffer:
-    """Audio from one stream, waiting to be mixed in. Two clocks never run at
-    exactly the same speed, and an app delivers sound in bursts, so it keeps
-    a little in reserve: after running dry it waits until PREBUFFER has
-    collected again, and if too much piles up it skips ahead."""
-
-    PREBUFFER = RATE // 10  # 100 ms
-    LIMIT = RATE // 2
-
-    def __init__(self) -> None:
-        self._chunks: deque[np.ndarray] = deque()
-        self._size = 0
-        self._primed = False
-        self._lock = threading.Lock()
-
-    def __len__(self) -> int:
-        return self._size
-
-    def push(self, samples: np.ndarray) -> None:
-        with self._lock:
-            self._chunks.append(samples)
-            self._size += len(samples)
-            excess = self._size - self.PREBUFFER if self._size > self.LIMIT else 0
-            while excess > 0:
-                first = self._chunks[0]
-                if len(first) <= excess:
-                    self._chunks.popleft()
-                    cut = len(first)
-                else:
-                    self._chunks[0] = first[excess:]
-                    cut = excess
-                self._size -= cut
-                excess -= cut
-
-    def take(self, count: int) -> np.ndarray:
-        """Exactly `count` samples, padded with silence when there aren't enough."""
-        out = np.zeros(count, dtype=np.float32)
-        with self._lock:
-            if not self._primed:
-                if self._size < self.PREBUFFER:
-                    return out
-                self._primed = True
-            filled = 0
-            while filled < count and self._chunks:
-                first = self._chunks[0]
-                n = min(len(first), count - filled)
-                out[filled:filled + n] = first[:n]
-                if n == len(first):
-                    self._chunks.popleft()
-                else:
-                    self._chunks[0] = first[n:]
-                filled += n
-            self._size -= filled
-            if filled < count:
-                self._primed = False
-        return out
+def find_streams(target: str) -> dict[int, list[str]] | None:
+    """The streams to capture for an app, or everything the computer plays."""
+    if target == ALL_SOUND:
+        return {-1: ["--device=@DEFAULT_MONITOR@"]}
+    text = _pactl("list", "sink-inputs")
+    if text is None:
+        return None
+    return {index: [f"--monitor-stream={index}"] for index, properties in _app_streams(text)
+            if _app_key(properties) == target}
 
 
-class AppAudio:
-    """What one app plays, from all its playback streams, including ones it
-    opens after the recording started (a call that begins later, a new tab
-    in a browser). Or, with ALL_SOUND, everything the computer plays.
-
-    The microphone sets the pace: for every block of microphone audio, take()
-    returns the same number of samples of the app's sound to mix in."""
-
-    POLL_SECONDS = 1.0
-
-    def __init__(self, target: str) -> None:
-        self.target = target
-        self._streams: dict[int, tuple[Capture, _JitterBuffer]] = {}
-        self._lock = threading.Lock()
-        self._stopping = threading.Event()
-        self._watcher: threading.Thread | None = None
-
-    def start(self) -> None:
-        if self.target == ALL_SOUND:
-            self._add(-1, ["--device=@DEFAULT_MONITOR@"])
-            return
-        self._find_streams()
-        self._watcher = threading.Thread(target=self._watch, daemon=True)
-        self._watcher.start()
-
-    def stop(self) -> None:
-        self._stopping.set()
-        if self._watcher is not None:
-            self._watcher.join(timeout=5)
-        with self._lock:
-            streams = list(self._streams.values())
-            self._streams.clear()
-        for capture, _ in streams:
-            capture.stop()
-
-    @property
-    def stream_count(self) -> int:
-        with self._lock:
-            return sum(capture.running for capture, _ in self._streams.values())
-
-    def take(self, count: int) -> np.ndarray:
-        mixed = np.zeros(count, dtype=np.float32)
-        with self._lock:
-            buffers = [buffer for _, buffer in self._streams.values()]
-        for buffer in buffers:
-            mixed += buffer.take(count)
-        return mixed
-
-    def _add(self, index: int, source_args: list[str]) -> None:
-        buffer = _JitterBuffer()
-        capture = Capture(source_args, buffer.push)
-        try:
-            capture.start()
-        except OSError:
-            return
-        with self._lock:
-            self._streams[index] = (capture, buffer)
-
-    def _find_streams(self) -> None:
-        text = _pactl("list", "sink-inputs")
-        if text is None:
-            return
-        wanted = {index for index, properties in _app_streams(text) if _app_key(properties) == self.target}
-        with self._lock:
-            # Captures that have ended and played out are let go (and started
-            # again if the stream is still there).
-            for index in [i for i, (capture, buffer) in self._streams.items()
-                          if not capture.running and not len(buffer)]:
-                del self._streams[index]
-            new = wanted - self._streams.keys()
-        for index in sorted(new):
-            self._add(index, [f"--monitor-stream={index}"])
-
-    def _watch(self) -> None:
-        while not self._stopping.wait(self.POLL_SECONDS):
-            self._find_streams()
-
+def open_stream(spec: list[str], rate: int, on_audio) -> Capture:
+    return Capture(spec, on_audio, rate)

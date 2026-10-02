@@ -3,7 +3,7 @@ server: pactl's output is faked, and the app's sound is fed in by hand."""
 
 import numpy as np
 
-from leoslyssnare import pulse
+from leoslyssnare import pulse, sources
 from leoslyssnare.recorder import RECORDING, AudioRecorder
 
 SOURCES = """Source #63
@@ -55,15 +55,15 @@ def test_lists_each_app_once_and_not_this_one(monkeypatch):
     fake_pactl(monkeypatch, sink_input(1, "Firefox", "firefox") + sink_input(2, "Firefox", "firefox")
                + sink_input(3, "Chromium", "teams-for-linux")
                + sink_input(4, "Leos Lyssnare", "python3", pid=os.getpid()))
-    assert pulse.applications() == [pulse.Application("teams-for-linux", "Chromium (teams-for-linux)"),
-                                    pulse.Application("firefox", "Firefox")]
+    assert pulse.applications() == [sources.Application("teams-for-linux", "Chromium (teams-for-linux)"),
+                                    sources.Application("firefox", "Firefox")]
 
 
 def test_app_audio_follows_the_apps_streams(monkeypatch):
     started = []
 
     class FakeCapture:
-        def __init__(self, args, on_audio):
+        def __init__(self, args, on_audio, rate):
             self.args, self.on_audio, self.running = args, on_audio, True
 
         def start(self):
@@ -73,8 +73,9 @@ def test_app_audio_follows_the_apps_streams(monkeypatch):
             self.running = False
 
     monkeypatch.setattr(pulse, "Capture", FakeCapture)
+    monkeypatch.setattr(sources, "_backend", lambda: pulse)
     fake_pactl(monkeypatch, sink_input(7, "Chromium", "teams-for-linux") + sink_input(8, "Firefox", "firefox"))
-    app = pulse.AppAudio("teams-for-linux")
+    app = sources.app_audio("teams-for-linux", pulse.RATE)
     app._find_streams()
     assert started == [["--monitor-stream=7"]]
     # The call opens a second stream later on.
@@ -84,15 +85,19 @@ def test_app_audio_follows_the_apps_streams(monkeypatch):
     assert app.stream_count == 2
 
     for capture, _ in app._streams.values():
-        capture.on_audio(np.full(pulse._JitterBuffer.PREBUFFER, 0.25, dtype=np.float32))
+        capture.on_audio(np.full(pulse.RATE // 10, 0.25, dtype=np.float32))
     assert np.allclose(app.take(480), 0.5)  # both streams, mixed
     app.stop()
     assert app.stream_count == 0
 
 
+def test_all_sound_is_the_default_output(monkeypatch):
+    assert pulse.find_streams(sources.ALL_SOUND) == {-1: ["--device=@DEFAULT_MONITOR@"]}
+
+
 def test_jitter_buffer_waits_pads_and_skips_ahead():
-    buffer = pulse._JitterBuffer()
-    prebuffer = buffer.PREBUFFER
+    buffer = sources.JitterBuffer(48_000)
+    prebuffer = buffer.prebuffer
     buffer.push(np.ones(prebuffer // 2, dtype=np.float32))
     assert not buffer.take(100).any()  # still collecting
     buffer.push(np.ones(prebuffer // 2, dtype=np.float32))
@@ -104,8 +109,8 @@ def test_jitter_buffer_waits_pads_and_skips_ahead():
     assert not buffer.take(10).any()
 
     # Far too much: only the newest PREBUFFER is kept.
-    buffer = pulse._JitterBuffer()
-    buffer.push(np.zeros(buffer.LIMIT, dtype=np.float32))
+    buffer = sources.JitterBuffer(48_000)
+    buffer.push(np.zeros(buffer.limit, dtype=np.float32))
     buffer.push(np.ones(1000, dtype=np.float32))
     assert len(buffer) == prebuffer
     assert buffer.take(prebuffer)[-1000:].all()

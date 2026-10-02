@@ -6,6 +6,7 @@ A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **
 
 - **Transcribe an existing file:** choose or drag in an `.m4a` file (`.mp3`, `.wav` and other common audio formats also work).
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out of the recording. Everything you record while unpaused is saved to **one** `.m4a` file.
+- **Record both sides of a call:** choose the microphone, and under *Also record sound from* choose the app the meeting is in (Teams, Zoom, a browser…) or *All sound from this Mac*. The app's sound is mixed with the microphone into the same recording, so the people you're talking to are transcribed too. An app shows up in the list once it plays sound; if you choose it before the call starts, it's picked up as soon as it does. Wear headphones, otherwise the microphone hears the call from the speakers as well. Recording an app's sound needs macOS 14.2 or later.
 - When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Transcribe* to start right away.
 - **Who said what:** the app identifies different speakers (for example 8 people in a meeting) and labels each part of the transcript *Speaker 1*, *Speaker 2*, and so on. You can rename them, for example to *Anna*, and the transcript updates everywhere.
 - Transcripts are shown with timestamps and saved automatically as `.txt`.
@@ -196,6 +197,9 @@ Good to know:
 The first time you record, macOS asks for microphone access. If you said no, turn it on again under
 **System Settings › Privacy & Security › Microphone**.
 
+The first time you record another app's sound, macOS asks whether Leos Lyssnare may record the sound of other apps. If you said no, the app's sound isn't recorded; turn it on under
+**System Settings › Privacy & Security › Screen & System Audio Recording**, in the *System Audio Recording Only* list.
+
 ## Tips
 
 - Set the language explicitly (for example **Swedish**) rather than *Auto-detect*. It's faster and gives better results.
@@ -211,9 +215,13 @@ Sources/LeosLyssnare/
   LeosLyssnareApp.swift       App entry point
   ContentView.swift           The UI
   AudioRecorder.swift         Recording with pause/resume into one .m4a
+  MixingRecorder.swift        Recording a chosen microphone with an app's sound mixed in
+  AppAudioTap.swift           Capturing an app's sound (Core Audio process tap)
+  AudioSources.swift          Lists the microphones and the apps playing sound
+  SourcePickers.swift         The microphone and app pickers
   Transcriber.swift           Model download/loading, transcription and speaker identification
   AppPaths.swift              File locations
-Support/Info.plist            App bundle settings, including microphone permission text
+Support/Info.plist            App bundle settings, including the permission texts
 scripts/build-app.sh          Builds and signs the .app
 desktop/                      Windows and Linux version (see desktop/README.md)
 ```

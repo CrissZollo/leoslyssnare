@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var recorder = AudioRecorder()
+    @StateObject private var sources = SourcesModel()
     @StateObject private var transcriber = Transcriber()
 
     @StateObject private var ui = ViewState()
@@ -30,6 +31,7 @@ struct ContentView: View {
         .background(Theme.canvas)
         .onReceive(tick) { _ in
             ui.record(level: recorder.level, state: recorder.state)
+            sources.tick(idle: recorder.state == .idle)
         }
         .fileImporter(isPresented: $ui.showFileImporter, allowedContentTypes: [.audio]) { result in
             if case .success(let url) = result {
@@ -201,11 +203,15 @@ struct ContentView: View {
             WaveformView(levels: ui.levels, state: recorder.state)
                 .frame(height: 64)
 
+            SourcePickers(sources: sources, recorder: recorder)
+
             HStack(spacing: 10) {
                 switch recorder.state {
                 case .idle:
                     Button {
-                        Task { await recorder.start() }
+                        let microphone = sources.microphone.isEmpty ? nil : sources.microphone
+                        let application = sources.application.isEmpty ? nil : sources.application
+                        Task { await recorder.start(microphone: microphone, application: application) }
                     } label: {
                         Label("Start recording", systemImage: "record.circle")
                             .frame(maxWidth: .infinity)

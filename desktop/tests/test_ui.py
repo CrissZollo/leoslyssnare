@@ -229,15 +229,16 @@ def test_system_programs_get_the_systems_libraries(monkeypatch):
 
 
 def test_choose_microphone_and_meeting_app(qapp, tmp_path, monkeypatch):
-    from leoslyssnare import pulse
+    from leoslyssnare import sources
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr(pulse, "available", lambda: True)
-    monkeypatch.setattr(pulse, "default_microphone", lambda: "jabra")
-    monkeypatch.setattr(pulse, "microphones", lambda: [pulse.Microphone("jabra", "Jabra Engage"),
-                                                       pulse.Microphone("cam", "Konftel Cam10")])
-    playing = [pulse.Application("teams-for-linux", "Chromium (teams-for-linux)")]
-    monkeypatch.setattr(pulse, "applications", lambda: list(playing))
+    monkeypatch.setattr(sources, "can_choose_microphone", lambda: True)
+    monkeypatch.setattr(sources, "can_record_apps", lambda: True)
+    monkeypatch.setattr(sources, "default_microphone", lambda: "jabra")
+    monkeypatch.setattr(sources, "microphones", lambda: [sources.Microphone("jabra", "Jabra Engage"),
+                                                         sources.Microphone("cam", "Konftel Cam10")])
+    playing = [sources.Application("teams-for-linux", "Chromium (teams-for-linux)")]
+    monkeypatch.setattr(sources, "applications", lambda: list(playing))
     window = appmod.MainWindow()
     try:
         mics = [window.mic_combo.itemText(i) for i in range(window.mic_combo.count())]
@@ -258,5 +259,23 @@ def test_choose_microphone_and_meeting_app(qapp, tmp_path, monkeypatch):
     try:
         assert window.mic_combo.currentData() == "cam"
         assert window.app_combo.currentData() == "teams-for-linux"
+    finally:
+        window.close()
+
+
+def test_microphone_only_where_apps_cant_be_recorded(qapp, tmp_path, monkeypatch):
+    """Windows 10: the microphone can be chosen, but there's no app list."""
+    from leoslyssnare import sources
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(sources, "can_choose_microphone", lambda: True)
+    monkeypatch.setattr(sources, "can_record_apps", lambda: False)
+    monkeypatch.setattr(sources, "default_microphone", lambda: None)
+    monkeypatch.setattr(sources, "microphones", lambda: [sources.Microphone("Mikrofon (Jabra)", "Mikrofon (Jabra)")])
+    window = appmod.MainWindow()
+    try:
+        window.show()
+        assert window.mic_combo.isVisible() and window.mic_combo.itemText(0) == "Default microphone"
+        assert not window.app_combo.isVisible()
     finally:
         window.close()
