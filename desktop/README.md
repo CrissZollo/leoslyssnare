@@ -132,6 +132,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1
 cd desktop
 python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt pytest
+python packaging/make_icons.py                       # renders the app icon, once
 python run.py
 python -m pytest tests
 ```
@@ -152,13 +153,13 @@ desktop/
     pulse.py                    Linux: lists microphones and apps playing sound, captures them
     paths.py                    File locations
     keepawake.py                Stops the computer from sleeping while working
-    resources/icon.png
+    resources/icon.png          Rendered by make_icons.py (not in git)
   packaging/
     leoslyssnare.spec           PyInstaller build (both platforms)
     build-appimage.sh           Linux: PortAudio + PyInstaller + appimagetool
     build-windows.ps1           Windows: PyInstaller + zip + Inno Setup installer
     windows-installer.iss       Inno Setup script
     leoslyssnare.desktop        Linux desktop entry
-    icon.svg, icon.ico          App icon (make_icons.py renders the PNG and ICO)
+    icon.svg, icon.ico          App icon (make_icons.py renders the PNG and ICO; they're not in git)
   tests/
 ```

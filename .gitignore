@@ -7,3 +7,7 @@ xcuserdata/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Rendered from desktop/packaging/icon.svg by make_icons.py (the builds run it)
+desktop/leoslyssnare/resources/icon.png
+desktop/packaging/icon.ico
