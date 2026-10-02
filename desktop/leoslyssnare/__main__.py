@@ -17,6 +17,38 @@ def _use_bundled_portaudio() -> None:
     ctypes.util.find_library = lambda name: bundled if name == "portaudio" else find_library(name)
 
 
+def _self_test_wasapi() -> None:
+    """Runs the COM calls behind choosing an app and capturing its sound. A
+    computer without sound devices (like a build server) can't do it all, so
+    that's only reported; a crash in the calls themselves fails the test."""
+    import time
+
+    from leoslyssnare import wasapi
+
+    def check(what, action):
+        try:
+            return action()
+        except OSError as error:
+            if "access violation" in str(error):
+                raise
+            print(f"{what}: not available here ({error})")
+            return None
+
+    print("WASAPI microphones:", len(wasapi.microphones()), "· default:", wasapi.default_microphone())
+    pids = check("Sound sessions", wasapi._session_pids)
+    if pids is not None:
+        print("Sound sessions:", len(pids), "· apps:", [app.name for app in wasapi.applications()])
+    if not wasapi.can_record_apps():
+        print("App capture: needs Windows 11")
+        return
+    received = []
+    capture = wasapi.ProcessLoopback(os.getpid(), False, 48_000, received.append)
+    if check("App capture", lambda: capture.start() or True):
+        time.sleep(0.5)
+        print("App capture:", sum(len(block) for block in received), "samples in 0.5 s")
+    capture.stop()
+
+
 def _self_test() -> int:
     """Loads every native library the app needs and round-trips a short
     recording. Used by the build scripts to check a packaged app."""
@@ -37,6 +69,8 @@ def _self_test() -> int:
     import sounddevice
 
     print("PortAudio:", sounddevice.get_portaudio_version()[1])
+    if sys.platform == "win32":
+        _self_test_wasapi()
 
     from leoslyssnare.recorder import platform_format
 

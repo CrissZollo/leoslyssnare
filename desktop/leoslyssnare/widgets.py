@@ -114,6 +114,9 @@ class Button(QPushButton):
 class Combo(QComboBox):
     """A combo box with our own chevron. Scrolling over it doesn't change it."""
 
+    # Just before the list opens, so lists that change (microphones, apps) can be refreshed.
+    opening = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self.setView(QListView())
@@ -125,6 +128,10 @@ class Combo(QComboBox):
             super().wheelEvent(event)
         else:
             event.ignore()
+
+    def showPopup(self) -> None:
+        self.opening.emit()
+        super().showPopup()
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)

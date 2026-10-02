@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>0.1.2</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>0.1.2</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
@@ -28,7 +28,11 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Leos Lyssnare records meetings with the microphone so they can be transcribed on this Mac. Nothing leaves the computer.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Leos Lyssnare records the sound of the app your meeting is in, so the other people in it are transcribed too. Nothing leaves the computer.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>Recordings and transcripts are saved in Documents/LeosLyssnare.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>When you open a transcript, Leos Lyssnare looks for its recording in Downloads too.</string>
 </dict>
 </plist>

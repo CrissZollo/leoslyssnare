@@ -6,9 +6,12 @@ A native macOS app for Apple Silicon (M1 and newer) that transcribes meetings **
 
 - **Transcribe an existing file:** choose or drag in an `.m4a` file (`.mp3`, `.wav` and other common audio formats also work).
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out of the recording. Everything you record while unpaused is saved to **one** `.m4a` file.
+- **Record both sides of a call:** choose the microphone, and under *Also record sound from* choose the app the meeting is in (Teams, Zoom, a browser…) or *All sound from this Mac*. The app's sound is mixed with the microphone into the same recording, so the people you're talking to are transcribed too. An app shows up in the list once it plays sound; if you choose it before the call starts, it's picked up as soon as it does. Wear headphones, otherwise the microphone hears the call from the speakers as well. Recording an app's sound needs macOS 14.2 or later.
 - When you stop recording, the app asks **“Transcribe the recording?”**. Choose *Transcribe* to start right away.
-- **Who said what:** the app identifies different speakers (for example 8 people in a meeting) and labels each part of the transcript *Speaker 1*, *Speaker 2*, and so on. You can rename them, for example to *Anna*, and the transcript updates everywhere.
-- Transcripts are shown with timestamps and saved automatically as `.txt`.
+- **Who said what:** the app identifies different speakers (for example 8 people in a meeting) and labels each part of the transcript *Speaker 1*, *Speaker 2*, and so on. You can rename them, for example to *Anna*, and the transcript updates everywhere. If one person was split into two speakers, merge them with the button next to the name (*Undo* is offered right after). If part of a line was said by someone else, select it, right-click and choose *Move to speaker* or *Move to a new speaker*: it becomes a line of its own, and what came after it gets a new line with the original speaker. The times follow the words.
+- **Listen back:** press play under the transcript. The line being spoken is highlighted (word by word when speakers are identified) and kept in the middle of the view as it plays. Click any line to play from there. Scroll away to read elsewhere and *Back to playback* takes you back. The timeline is coloured by who speaks when. Recordings from the Linux app (`.ogg`) can't be played or transcribed on the Mac.
+- Transcripts are shown with timestamps and saved automatically as `.txt`, in the same format as the Windows and Linux app.
+- **Open a saved transcript:** *Open transcript…* (or drop a `.txt` on the window) shows it again. Its recording is looked for by the file name on the transcript's first line: where it was, next to the transcript, in the recordings folder and in Downloads; otherwise choose it with *Find audio file…*. The exact word timings are kept in `~/Library/Application Support/LeosLyssnare/Transcript data`, so they come back when a transcript is reopened.
 
 Speech recognition uses [WhisperKit](https://github.com/argmaxinc/WhisperKit), which runs OpenAI's Whisper model on the Mac's Neural Engine through Core ML. Speaker identification uses SpeakerKit from the same package, which runs the pyannote speaker model the same way. No audio or text ever leaves the computer.
 
@@ -107,12 +110,14 @@ The first build takes a few minutes, because it also downloads the dependencies 
 The workflow in `.github/workflows/build.yml` builds the Mac app, the Windows installer and `.zip`, and the Linux AppImage on GitHub's computers:
 
 - **Every merge to `main`:** all three are built. It also runs on pull requests that change one of the apps. Open the run under the repository's **Actions** tab. When it's done, download the files from **Artifacts** at the bottom of the page.
-- **A release:** push a tag that starts with `desktop-v`:
+- **A release:** first set the new version in `desktop/leoslyssnare/__init__.py` (`__version__`) and in `Support/Info.plist` (`CFBundleShortVersionString` and `CFBundleVersion`). The files are named after it. Then push a tag that starts with `desktop-v` and the same version:
 
   ```sh
-  git tag desktop-v1.0.0
-  git push origin desktop-v1.0.0
+  git tag desktop-v0.1.2
+  git push origin desktop-v0.1.2
   ```
+
+  If the tag and the versions in the code differ, the build stops before anything is published.
 
   The Mac app, the installer, the `.zip` and the AppImage then appear under the repository's **Releases**.
 
@@ -196,10 +201,13 @@ Good to know:
 The first time you record, macOS asks for microphone access. If you said no, turn it on again under
 **System Settings › Privacy & Security › Microphone**.
 
+The first time you record another app's sound, macOS asks whether Leos Lyssnare may record the sound of other apps. If you said no, the app's sound isn't recorded; turn it on under
+**System Settings › Privacy & Security › Screen & System Audio Recording**, in the *System Audio Recording Only* list.
+
 ## Tips
 
 - Set the language explicitly (for example **Swedish**) rather than *Auto-detect*. It's faster and gives better results.
-- The Mac won't go to sleep by itself while it's recording or transcribing. Closing the lid still stops the recording.
+- The Mac won't go to sleep by itself while it's recording or transcribing. Closing the lid still stops the recording. Quitting or closing the window while recording asks first, and saves the recording.
 - One hour of audio takes about 5–10 minutes with *Large v3 Turbo* on an M1, plus a minute or two for identifying speakers. The exact time varies.
 - Memory: the whole recording is loaded at 16 kHz, about 230 MB per hour of audio. Recordings several hours long work fine on 16 GB.
 
@@ -211,9 +219,17 @@ Sources/LeosLyssnare/
   LeosLyssnareApp.swift       App entry point
   ContentView.swift           The UI
   AudioRecorder.swift         Recording with pause/resume into one .m4a
+  MixingRecorder.swift        Recording a chosen microphone with an app's sound mixed in
+  AppAudioTap.swift           Capturing an app's sound (Core Audio process tap)
+  AudioSources.swift          Lists the microphones and the apps playing sound
+  SourcePickers.swift         The microphone and app pickers
   Transcriber.swift           Model download/loading, transcription and speaker identification
+  TranscriptFile.swift        Saving and reading back transcripts, merging speakers, moving text
+  TranscriptTextView.swift    The transcript text: highlighting, following playback, click to play
+  TranscriptPlayer.swift      Playing the recording along with the transcript
+  PlayerBar.swift             Play/pause and the timeline under the transcript
   AppPaths.swift              File locations
-Support/Info.plist            App bundle settings, including microphone permission text
+Support/Info.plist            App bundle settings, including the permission texts
 scripts/build-app.sh          Builds and signs the .app
 desktop/                      Windows and Linux version (see desktop/README.md)
 ```

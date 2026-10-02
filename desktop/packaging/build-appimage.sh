@@ -2,8 +2,10 @@
 # Builds "Leos_Lyssnare-x86_64.AppImage". Run on Linux from the desktop/ folder:
 #   ./packaging/build-appimage.sh
 #
-# Needs: python3 (3.10+) with venv, cmake, a C compiler, curl, and the ALSA
-# headers (Debian/Ubuntu: sudo apt install python3-venv cmake build-essential libasound2-dev curl).
+# Needs: python3 (3.10+) with venv, cmake, a C compiler, curl, the ALSA
+# headers and the X11 libraries Qt needs, which get bundled (Debian/Ubuntu:
+#   sudo apt install python3-venv cmake build-essential libasound2-dev curl git \
+#     libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 libxkbcommon-x11-0).
 # Build on the oldest distribution you want to support (Ubuntu 22.04 in CI):
 # the AppImage runs on that and anything newer.
 set -euo pipefail
@@ -14,6 +16,24 @@ WORK="$ROOT/build/linux"
 PORTAUDIO_VERSION="v19.7.0"
 ARCH="$(uname -m)"
 mkdir -p "$WORK"
+
+# Checked first: without the headers PortAudio fails halfway, and a missing
+# X11 library only gets a warning from PyInstaller, leaving an AppImage that
+# doesn't start on computers without it.
+missing=()
+[ -f /usr/include/alsa/asoundlib.h ] || missing+=("libasound2-dev")
+libraries="$(PATH="$PATH:/sbin:/usr/sbin" ldconfig -p)"
+for lib in libxcb-cursor.so.0:libxcb-cursor0 libxcb-icccm.so.4:libxcb-icccm4 \
+           libxcb-keysyms.so.1:libxcb-keysyms1 libxcb-xkb.so.1:libxcb-xkb1 \
+           libxkbcommon-x11.so.0:libxkbcommon-x11-0; do
+    grep -qF "${lib%%:*}" <<<"$libraries" || missing+=("${lib##*:}")
+done
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "✖ Missing: ${missing[*]}" >&2
+    echo "  Debian/Ubuntu: sudo apt install ${missing[*]}" >&2
+    echo "  (Other distributions: see the package lists in desktop/README.md.)" >&2
+    exit 1
+fi
 
 echo "▶ Python environment…"
 if [ ! -d "$WORK/venv" ]; then

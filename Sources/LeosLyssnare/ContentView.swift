@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var recorder = AudioRecorder()
+    @StateObject private var sources = SourcesModel()
+    @StateObject private var player = TranscriptPlayer()
     @StateObject private var transcriber = Transcriber()
 
     @StateObject private var ui = ViewState()
@@ -28,8 +30,17 @@ struct ContentView: View {
         .padding(EdgeInsets(top: 16, leading: 24, bottom: 24, trailing: 24))
         .frame(minWidth: 1000, idealWidth: 1180, minHeight: 640, idealHeight: 780)
         .background(Theme.canvas)
+        // Files dropped anywhere on the window, not only on the file card.
+        .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
+        .background(WindowCloseGuard())
+        .onAppear { RecordingGuard.recorder = recorder }
+        // A new transcript, or its recording found: get the recording ready to play.
+        .onChange(of: transcriber.transcript.map { [$0.sourceURL, $0.savedURL] }) { _, _ in
+            openRecording()
+        }
         .onReceive(tick) { _ in
             ui.record(level: recorder.level, state: recorder.state)
+            sources.tick(idle: recorder.state == .idle)
         }
         .fileImporter(isPresented: $ui.showFileImporter, allowedContentTypes: [.audio]) { result in
             if case .success(let url) = result {
@@ -89,6 +100,14 @@ struct ContentView: View {
                 .disabled(transcriber.isBusy)
                 .help("One-time download that needs internet. After that, everything runs offline.")
             }
+
+            Button {
+                chooseTranscript()
+            } label: {
+                Label("Open transcript…", systemImage: "doc.text")
+            }
+            .buttonStyle(GhostButtonStyle())
+            .help("Open a saved transcript, with its recording if it can be found")
 
             Button {
                 NSWorkspace.shared.open(AppPaths.recordings)
@@ -201,11 +220,17 @@ struct ContentView: View {
             WaveformView(levels: ui.levels, state: recorder.state)
                 .frame(height: 64)
 
+            SourcePickers(sources: sources, recorder: recorder)
+
             HStack(spacing: 10) {
                 switch recorder.state {
                 case .idle:
                     Button {
-                        Task { await recorder.start() }
+                        // Otherwise the microphone would pick up the playback.
+                        player.pause()
+                        let microphone = sources.microphone.isEmpty ? nil : sources.microphone
+                        let application = sources.application.isEmpty ? nil : sources.application
+                        Task { await recorder.start(microphone: microphone, application: application) }
                     } label: {
                         Label("Start recording", systemImage: "record.circle")
                             .frame(maxWidth: .infinity)
@@ -311,15 +336,29 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $ui.isDropTargeted, perform: handleDrop)
     }
 
+    /// A .txt is a saved transcript to show; anything else is audio to transcribe.
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
             guard let url else { return }
             Task { @MainActor in
-                await transcriber.transcribe(url: url)
+                if url.pathExtension.lowercased() == "txt" {
+                    transcriber.openTranscript(url: url)
+                } else {
+                    await transcriber.transcribe(url: url)
+                }
             }
         }
         return true
+    }
+
+    private func chooseTranscript() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.directoryURL = AppPaths.transcripts
+        panel.message = "Open a transcript"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        transcriber.openTranscript(url: url)
     }
 
     // MARK: - Status
@@ -386,8 +425,8 @@ struct ContentView: View {
             Text("Everything stays on this computer.")
                 .font(.system(size: 13))
                 .foregroundColor(Theme.muted)
-            Button("Open recordings folder") {
-                NSWorkspace.shared.open(AppPaths.recordings)
+            Button("Open a saved transcript") {
+                chooseTranscript()
             }
             .buttonStyle(.link)
             .padding(.top, 6)
@@ -453,18 +492,51 @@ struct ContentView: View {
             Rectangle().fill(Theme.line).frame(height: 1)
 
             HStack(alignment: .top, spacing: 20) {
-                ScrollView {
-                    transcriptText(transcript)
-                        .lineSpacing(6)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.trailing, 8)
-                }
+                TranscriptTextView(
+                    transcript: transcript,
+                    revision: transcriber.revision,
+                    showTimestamps: ui.showTimestamps,
+                    position: player.shownPosition,
+                    follow: player.follow,
+                    canJump: player.url != nil,
+                    onJump: { player.seek($0) },
+                    onUserScroll: { player.follow = false },
+                    onMove: { first, last, speaker in
+                        let movedTo = transcriber.moveText(from: first, to: last, to: speaker)
+                        // Ready to type the new speaker's name.
+                        if movedTo != nil, speaker == nil { ui.showSpeakers = true }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if transcript.hasSpeakers && ui.showSpeakers {
                     speakersPanel(transcript)
                 }
             }
+
+            Rectangle().fill(Theme.line).frame(height: 1)
+
+            PlayerBar(player: player, transcript: transcript, canPlay: recorder.state == .idle,
+                      onFindAudio: chooseRecording)
         }
+    }
+
+    private func openRecording() {
+        if let transcript = transcriber.transcript {
+            player.open(transcript.sourceURL, transcriptLength: transcript.segments.last?.end ?? 0)
+        } else {
+            player.close()
+        }
+    }
+
+    /// Connects a transcript to its recording by hand, when it wasn't found.
+    private func chooseRecording() {
+        guard let transcript = transcriber.transcript else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.directoryURL = transcript.savedURL?.deletingLastPathComponent() ?? AppPaths.recordings
+        panel.message = "Find “\(transcript.sourceURL.lastPathComponent)”"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        transcriber.setRecording(url)
     }
 
     private func chips(for transcript: Transcript) -> [String] {
@@ -475,41 +547,8 @@ struct ContentView: View {
         if let last = transcript.segments.last {
             result.append("\(Transcript.timestamp(last.end)) long")
         }
-        result.append("done in \(Transcript.timestamp(transcript.processingTime))")
-        return result
-    }
-
-    /// The transcript as one piece of text, so it can be selected in one go.
-    /// Speaker names get their colour, timestamps are quiet.
-    private func transcriptText(_ transcript: Transcript) -> Text {
-        let body = Font.system(size: 15)
-        let small = Font.system(size: 12)
-        var result = Text("")
-        if transcript.hasSpeakers {
-            for segment in transcript.segments {
-                var head = Text(transcript.name(for: segment.speaker))
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Theme.speakerColor(segment.speaker))
-                if ui.showTimestamps {
-                    let time = Text("  " + Transcript.timestamp(segment.start)).font(small).foregroundColor(Theme.muted)
-                    head = head + time
-                }
-                let line = Text(segment.text).font(body).foregroundColor(Theme.ink)
-                result = result + head
-                result = result + Text("\n")
-                result = result + line
-                result = result + Text("\n\n")
-            }
-        } else if ui.showTimestamps {
-            for segment in transcript.segments {
-                let time = Text(Transcript.timestamp(segment.start) + "   ").font(small).foregroundColor(Theme.muted)
-                let line = Text(segment.text).font(body).foregroundColor(Theme.ink)
-                result = result + time
-                result = result + line
-                result = result + Text("\n")
-            }
-        } else {
-            result = Text(transcript.text(withTimestamps: false)).font(body).foregroundColor(Theme.ink)
+        if transcript.processingTime > 0 {  // unknown for an opened .txt
+            result.append("done in \(Transcript.timestamp(transcript.processingTime))")
         }
         return result
     }
@@ -521,10 +560,25 @@ struct ContentView: View {
             Text("Speakers (\(transcript.speakers.count))")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(Theme.ink)
-            Text("Type a name to replace “Speaker N” everywhere.")
+            Text("Type a name to replace “Speaker N” everywhere. Two speakers that are really one person can be merged. Text that someone else said: select it and right-click.")
                 .font(.system(size: 12))
                 .foregroundColor(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let undoText = transcriber.undoText {
+                HStack(spacing: 8) {
+                    Text(undoText)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Undo") { transcriber.undo() }
+                        .buttonStyle(.link)
+                }
+                .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 8))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.brandSoft))
+                .padding(.top, 8)
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -548,8 +602,11 @@ struct ContentView: View {
         return HStack(alignment: .top, spacing: 10) {
             SpeakerAvatar(speaker: speaker, name: transcript.speakerNames[speaker] ?? "")
             VStack(alignment: .leading, spacing: 5) {
-                TextField("Speaker \(speaker)", text: speakerNameBinding(speaker))
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 6) {
+                    TextField("Speaker \(speaker)", text: speakerNameBinding(speaker))
+                        .textFieldStyle(.roundedBorder)
+                    mergeMenu(transcript, speaker: speaker)
+                }
                 ShareBar(speaker: speaker, share: share)
                 Text("\(Transcript.timestamp(seconds)) · \(Int((share * 100).rounded())) %")
                     .font(.system(size: 12))
@@ -561,6 +618,29 @@ struct ContentView: View {
                     .foregroundColor(Theme.muted)
                     .lineLimit(3)
             }
+        }
+    }
+
+    /// "Same person as another speaker? Merge them."
+    @ViewBuilder
+    private func mergeMenu(_ transcript: Transcript, speaker: Int) -> some View {
+        let others = transcript.speakers.filter { $0 != speaker }
+        if !others.isEmpty {
+            Menu {
+                Text("\(transcript.name(for: speaker)) is the same person as…")
+                Divider()
+                ForEach(others, id: \.self) { other in
+                    Button(transcript.name(for: other)) {
+                        transcriber.mergeSpeakers(speaker, into: other)
+                    }
+                }
+            } label: {
+                Image(systemName: "arrow.triangle.merge")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Same person as another speaker? Merge them")
         }
     }
 

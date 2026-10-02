@@ -11,7 +11,7 @@ pytest.importorskip("PySide6.QtWidgets")
 pytest.importorskip("PySide6.QtSvg")
 
 from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QWheelEvent  # noqa: E402
+from PySide6.QtGui import QTextCursor, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from leoslyssnare import app as appmod  # noqa: E402
@@ -195,7 +195,7 @@ def test_open_transcript_finds_its_recording_and_merges_speakers(window, tmp_pat
     assert set(window.speaker_edits) == {1, 2}
     assert window.undo_bar.isVisibleTo(window)
     assert "Tjena. Ska vi börja?" in saved.read_text(encoding="utf-8")
-    window._undo_merge()
+    window._undo()
     assert set(window.speaker_edits) == {1, 2, 3}
     assert not window.undo_bar.isVisibleTo(window)
     assert "Speaker 3: Tjena." in saved.read_text(encoding="utf-8")
@@ -214,13 +214,111 @@ def test_open_transcript_without_its_recording(window, tmp_path, monkeypatch):
 
 
 def test_system_programs_get_the_systems_libraries(monkeypatch):
+    from leoslyssnare import paths
+
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/leoslyssnare/_internal")
     monkeypatch.setenv("QT_PLUGIN_PATH", "/opt/leoslyssnare/_internal/PySide6/Qt/plugins")
     monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
-    env = appmod.system_env()
+    env = paths.system_env()
     assert "LD_LIBRARY_PATH" not in env and "QT_PLUGIN_PATH" not in env
 
     monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/local/lib")
-    env = appmod.system_env()
+    env = paths.system_env()
     assert env["LD_LIBRARY_PATH"] == "/usr/local/lib" and "LD_LIBRARY_PATH_ORIG" not in env
+
+
+def test_choose_microphone_and_meeting_app(qapp, tmp_path, monkeypatch):
+    from leoslyssnare import sources
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(sources, "can_choose_microphone", lambda: True)
+    monkeypatch.setattr(sources, "can_record_apps", lambda: True)
+    monkeypatch.setattr(sources, "default_microphone", lambda: "jabra")
+    monkeypatch.setattr(sources, "microphones", lambda: [sources.Microphone("jabra", "Jabra Engage"),
+                                                         sources.Microphone("cam", "Konftel Cam10")])
+    playing = [sources.Application("teams-for-linux", "Chromium (teams-for-linux)")]
+    monkeypatch.setattr(sources, "applications", lambda: list(playing))
+    window = appmod.MainWindow()
+    try:
+        mics = [window.mic_combo.itemText(i) for i in range(window.mic_combo.count())]
+        assert mics == ["Default (Jabra Engage)", "Jabra Engage", "Konftel Cam10"]
+        window.mic_combo.setCurrentIndex(2)
+        window.app_combo.setCurrentIndex(window.app_combo.findData("teams-for-linux"))
+        assert "headphones" in window.app_caption.text()
+
+        # The app has stopped playing: it stays chosen, and the list refreshes when opened.
+        playing.clear()
+        window.app_combo.opening.emit()
+        assert window.app_combo.currentText() == "Chromium (teams-for-linux)"
+    finally:
+        window.close()
+
+    # Remembered next time.
+    window = appmod.MainWindow()
+    try:
+        assert window.mic_combo.currentData() == "cam"
+        assert window.app_combo.currentData() == "teams-for-linux"
+    finally:
+        window.close()
+
+
+def test_microphone_only_where_apps_cant_be_recorded(qapp, tmp_path, monkeypatch):
+    """Windows 10: the microphone can be chosen, but there's no app list."""
+    from leoslyssnare import sources
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(sources, "can_choose_microphone", lambda: True)
+    monkeypatch.setattr(sources, "can_record_apps", lambda: False)
+    monkeypatch.setattr(sources, "default_microphone", lambda: None)
+    monkeypatch.setattr(sources, "microphones", lambda: [sources.Microphone("Mikrofon (Jabra)", "Mikrofon (Jabra)")])
+    window = appmod.MainWindow()
+    try:
+        window.show()
+        assert window.mic_combo.isVisible() and window.mic_combo.itemText(0) == "Default microphone"
+        assert not window.app_combo.isVisible()
+    finally:
+        window.close()
+
+
+def select(window, first: int, last: int) -> None:
+    cursor = window.text_view.textCursor()
+    cursor.setPosition(first)
+    cursor.setPosition(last, QTextCursor.KeepAnchor)
+    window.text_view.setTextCursor(cursor)
+
+
+def test_move_selected_text_to_a_new_speaker_and_undo(window):
+    window.transcript = timed_transcript()
+    window._show_transcript()
+    text = window.text_view.toPlainText()
+    start = window.segment_spans[0][0]
+    select(window, start + text[start:].index("<allihopa>") + 3, start + text[start:].index("och") + 3)
+
+    menu = window._build_text_menu(window.text_view.viewport().rect().center())
+    actions = [action.text() for action in menu.actions()]
+    assert actions[:2] == ["Move to speaker", "Move to a new speaker"]
+    assert any("Copy" in action for action in actions)
+    assert [a.text() for a in menu.actions()[0].menu().actions()] == ["Speaker 1", "Speaker 2"]
+
+    window._move_text(*window._selected_text_range(), None)
+    segments = window.transcript.segments
+    assert [(s.speaker, s.text, s.start, s.end) for s in segments] == [
+        (1, "Hej", 0, 1), (3, "<allihopa> och", 1, 3), (1, "välkomna.", 3, 4), (2, "Tack för det.", 5, 9)]
+    assert set(window.speaker_edits) == {1, 2, 3}
+    assert window.undo_label.text() == "Moved the text to Speaker 3."
+    assert "Speaker 3  00:00:01\n<allihopa> och\nSpeaker 1  00:00:03\nvälkomna." in window.text_view.toPlainText()
+
+    window._undo()
+    assert [s.text for s in window.transcript.segments] == [s.text for s in timed_transcript().segments]
+    assert set(window.speaker_edits) == {1, 2}
+
+
+def test_selection_from_a_name_counts_from_its_line(window):
+    window.transcript = make_transcript()
+    window._show_transcript()
+    _, (second_start, _) = window.segment_spans
+    select(window, 0, second_start + 4)  # from the first speaker's name into the second line
+    assert window._selected_text_range() == ((0, 0), (1, 4))
+    window.transcript.has_speakers = False
+    assert window._selected_text_range() is None

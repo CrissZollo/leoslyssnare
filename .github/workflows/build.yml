@@ -29,6 +29,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Version matches the release tag
+        # The release files are named after the versions in the code, not the tag.
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        run: |
+          TAG="${GITHUB_REF_NAME#desktop-v}"
+          DESKTOP=$(python -c "import leoslyssnare; print(leoslyssnare.__version__)")
+          MAC=$(/usr/bin/sed -n '/CFBundleShortVersionString/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' ../Support/Info.plist)
+          echo "Tag $TAG · desktop/leoslyssnare/__init__.py $DESKTOP · Support/Info.plist $MAC"
+          if [ "$DESKTOP" != "$TAG" ] || [ "$MAC" != "$TAG" ]; then
+            echo "::error::Set the version to $TAG in desktop/leoslyssnare/__init__.py and Support/Info.plist before tagging."
+            exit 1
+          fi
       - name: System packages
         # The libraries Qt needs to start, so the window tests run instead of failing to import.
         run: |

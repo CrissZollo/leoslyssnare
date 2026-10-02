@@ -136,3 +136,58 @@ def test_batch_pacer_moves_steadily_and_waits_for_the_batch():
     assert shown[-1] == pytest.approx(0.2)
     pacer.show(0.12)  # never backwards
     assert shown[-1] == pytest.approx(0.2) and len(shown) == 4
+
+
+def _timed(start: float, speaker: int, text: str) -> Segment:
+    """A line whose words are said one per second from `start`."""
+    words = [Word(start + i, start + i + 0.8, w) for i, w in enumerate(text.split())]
+    return Segment(start, words[-1].end, speaker, text, words)
+
+
+def test_move_text_from_the_middle_splits_the_line():
+    t = Transcript("a.m4a", [_timed(0, 1, "Hello there. How are you all today?"), _timed(10, 2, "Fine.")],
+                   "en", 1, True)
+    text = t.segments[0].text
+    first, last = text.index("How"), text.index("today") + 3  # cuts "today?" midway
+    assert t.move_text((0, first), (0, last)) == 3
+    assert [(s.speaker, s.text, s.start, s.end) for s in t.segments] == [
+        (1, "Hello there.", 0, 1.8), (3, "How are you all today?", 2, 6.8), (2, "Fine.", 10, 10.8)]
+    assert [w.text for w in t.segments[1].words] == ["How", "are", "you", "all", "today?"]
+
+
+def test_move_text_keeps_the_rest_with_its_speaker():
+    t = Transcript("a.m4a", [_timed(0, 1, "One two three four five")], "en", 1, True)
+    t.move_text((0, 4), (0, 13), 2)  # "two three", selected with a space in front
+    assert [(s.speaker, s.text, s.start, s.end) for s in t.segments] == [
+        (1, "One", 0, 0.8), (2, "two three", 1, 2.8), (1, "four five", 3, 4.8)]
+
+
+def test_moved_text_joins_a_neighbour_with_the_same_speaker():
+    t = Transcript("a.m4a", [_timed(0, 1, "Hi Anna."), _timed(5, 2, "Hi. Shall we start?")], "en", 1, True)
+    t.move_text((1, 0), (1, 3), 1)  # Anna's "Hi." was really speaker 1's
+    assert [(s.speaker, s.text, s.start, s.end) for s in t.segments] == [
+        (1, "Hi Anna. Hi.", 0, 5.8), (2, "Shall we start?", 6, 8.8)]
+    # The rest of the line too: now speaker 2 has nothing left.
+    t.move_text((1, 0), (1, len(t.segments[1].text)), 1)
+    assert [(s.speaker, s.text) for s in t.segments] == [(1, "Hi Anna. Hi. Shall we start?")]
+    assert t.speakers == [1]
+
+
+def test_move_text_across_lines():
+    t = Transcript("a.m4a", [_timed(0, 1, "Yes I agree."), _timed(4, 2, "Me too. Next item.")], "en", 1, True)
+    t.move_text((0, t.segments[0].text.index("I")), (1, len("Me too.")), 3)
+    assert [(s.speaker, s.text, s.start, s.end) for s in t.segments] == [
+        (1, "Yes", 0, 0.8), (3, "I agree. Me too.", 1, 5.8), (2, "Next item.", 6, 7.8)]
+
+
+def test_move_text_without_word_timings_splits_time_by_text():
+    t = Transcript("a.m4a", [Segment(10, 29, 1, "aaaa bbbb cccc dddd")], "en", 1, True)  # a second a character
+    t.move_text((0, 5), (0, 9), 2)
+    assert [(s.speaker, s.text, s.start, s.end) for s in t.segments] == [
+        (1, "aaaa", 10, 15), (2, "bbbb", 15, 19), (1, "cccc dddd", 19, 29)]
+
+
+def test_selecting_only_spaces_moves_nothing():
+    t = Transcript("a.m4a", [_timed(0, 1, "One two")], "en", 1, True)
+    assert t.move_text((0, 3), (0, 4), 2) is None
+    assert [(s.speaker, s.text) for s in t.segments] == [(1, "One two")]

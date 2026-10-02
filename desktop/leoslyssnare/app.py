@@ -13,12 +13,14 @@ import time
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QSettings, Qt, QTimer, QUrl, QVariantAnimation,
                             Signal)
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QPixmap, QTextCharFormat, QTextCursor
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPixmap, QTextCharFormat,
+                           QTextCursor)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSizePolicy,
                                QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
 
-from . import engine, icons, keepawake, paths, theme
+from . import engine, icons, keepawake, paths, sources, theme
+from .paths import system_env
 from .player import AudioPlayer, PlayerError
 from .recorder import IDLE, PAUSED, RECORDING, AudioRecorder, RecorderError
 from .theme import setup_application  # noqa: F401  (re-exported for the entry point)
@@ -35,22 +37,6 @@ SPEAKERS_WIDTH = 268
 
 def resource_path(name: str) -> str:
     return theme.resource_path(name)
-
-
-def system_env() -> dict[str, str]:
-    """The environment for system programs the app starts. A PyInstaller build
-    points LD_LIBRARY_PATH at its own Qt, and Qt programs such as Dolphin or
-    kde-open fail to start when they load that instead of the system's."""
-    env = dict(os.environ)
-    if getattr(sys, "frozen", False):
-        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
-        if original is None:
-            env.pop("LD_LIBRARY_PATH", None)
-        else:
-            env["LD_LIBRARY_PATH"] = original
-        for name in ("QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "QML2_IMPORT_PATH"):
-            env.pop(name, None)
-    return env
 
 
 def open_folder(path: str) -> None:
@@ -132,8 +118,8 @@ class MainWindow(QMainWindow):
         self.cancel_flag: engine.CancelFlag | None = None
         self.speaker_edits: dict[int, QLineEdit] = {}
         self.speaker_avatars: dict[int, Avatar] = {}
-        # The transcript as it was before the last merge, for Undo.
-        self.before_merge: tuple[list, dict] | None = None
+        # The transcript as it was before the last merge or moved text, for Undo.
+        self.before_edit: tuple[list, dict] | None = None
 
         self.player = AudioPlayer()
         # Where each segment's text sits in the transcript view, as character
@@ -373,6 +359,43 @@ class MainWindow(QMainWindow):
         self.waveform = Waveform()
         card.body.addWidget(self.waveform)
 
+        # Choosing the microphone needs PulseAudio or PipeWire on Linux, and
+        # recording an app's sound needs Windows 11 on Windows.
+        self.source_controls = QWidget()
+        column = QVBoxLayout(self.source_controls)
+        column.setContentsMargins(0, 4, 0, 4)
+        column.setSpacing(6)
+        column.addWidget(label("Microphone", "muted"))
+        self.mic_combo = Combo()
+        self.mic_combo.opening.connect(self._fill_microphones)
+        self.mic_combo.currentIndexChanged.connect(
+            lambda: self.settings.setValue("microphone", self.mic_combo.currentData()))
+        column.addWidget(self.mic_combo)
+
+        self.app_controls = QWidget()
+        apps = QVBoxLayout(self.app_controls)
+        apps.setContentsMargins(0, 4, 0, 0)
+        apps.setSpacing(6)
+        apps.addWidget(label("Also record sound from", "muted"))
+        self.app_combo = Combo()
+        self.app_combo.setToolTip("The app the meeting is in, so the other people in it are recorded too")
+        self.app_combo.opening.connect(self._fill_applications)
+        self.app_combo.currentIndexChanged.connect(self._on_application_changed)
+        apps.addWidget(self.app_combo)
+        self.app_caption = label("", "caption", wrap=True)
+        apps.addWidget(self.app_caption)
+        column.addWidget(self.app_controls)
+        card.body.addWidget(self.source_controls)
+
+        self.can_choose_sources = sources.can_choose_microphone()
+        self.can_record_apps = self.can_choose_sources and sources.can_record_apps()
+        self.source_controls.setVisible(self.can_choose_sources)
+        self.app_controls.setVisible(self.can_record_apps)
+        if self.can_choose_sources:
+            self._fill_microphones()
+        if self.can_record_apps:
+            self._fill_applications()
+
         row = QHBoxLayout()
         row.setSpacing(10)
         self.start_button = Button("Start recording", "record", "record", "lg")
@@ -387,10 +410,61 @@ class MainWindow(QMainWindow):
         card.body.addLayout(row)
         return card
 
+    def _fill_microphones(self) -> None:
+        saved = self.settings.value("microphone", "") or ""
+        microphones = sources.microphones()
+        default = sources.default_microphone()
+        default_name = next((mic.description for mic in microphones if mic.name == default), None)
+        self.mic_combo.blockSignals(True)
+        self.mic_combo.clear()
+        self.mic_combo.addItem(f"Default ({default_name})" if default_name else "Default microphone", "")
+        for mic in microphones:
+            self.mic_combo.addItem(mic.description, mic.name)
+        # A microphone that isn't connected now falls back to the default, but stays remembered.
+        self.mic_combo.setCurrentIndex(max(0, self.mic_combo.findData(saved)))
+        self.mic_combo.blockSignals(False)
+
+    def _fill_applications(self) -> None:
+        saved = self.settings.value("meetingApp", "") or ""
+        self.app_combo.blockSignals(True)
+        self.app_combo.clear()
+        self.app_combo.addItem("Nothing else (only the microphone)", "")
+        self.app_combo.addItem("All sound from this computer", sources.ALL_SOUND)
+        for app in sources.applications():
+            self.app_combo.addItem(app.name, app.key)
+        if saved and self.app_combo.findData(saved) < 0:
+            # Remembered from last time: it's recorded as soon as it plays sound.
+            self.app_combo.addItem(self.settings.value("meetingAppName", saved), saved)
+        self.app_combo.setCurrentIndex(max(0, self.app_combo.findData(saved)))
+        self.app_combo.blockSignals(False)
+        self._refresh_app_caption()
+
+    def _on_application_changed(self) -> None:
+        self.settings.setValue("meetingApp", self.app_combo.currentData())
+        self.settings.setValue("meetingAppName", self.app_combo.currentText())
+        self._refresh_app_caption()
+
+    def _refresh_app_caption(self) -> None:
+        choice = self.app_combo.currentData()
+        name = self.app_combo.currentText()
+        if self.recorder.state != IDLE and self.recorder.application not in (None, sources.ALL_SOUND):
+            text = (f"Recording the sound from {name}." if self.recorder.hearing_app
+                    else f"{name} isn't playing sound. It's recorded as soon as it does.")
+        elif not choice:
+            text = "To record a call, choose the app it's in. Apps show up here once they play sound."
+        else:
+            text = "Use headphones, so the microphone doesn't pick up the other people a second time."
+        if self.app_caption.text() != text:
+            self.app_caption.setText(text)
+
     def _start_recording(self) -> None:
         # Otherwise the microphone would pick up the playback.
         self.player.pause()
         self._refresh_player()
+        if self.can_choose_sources:
+            self.recorder.microphone = self.mic_combo.currentData() or None
+        if self.can_record_apps:
+            self.recorder.application = self.app_combo.currentData() or None
         try:
             self.recorder.start()
         except RecorderError as error:
@@ -431,6 +505,8 @@ class MainWindow(QMainWindow):
 
     def _tick(self) -> None:
         self.elapsed_label.setText(timestamp(self.recorder.elapsed))
+        if self.can_record_apps:
+            self._refresh_app_caption()
         if self.recorder.state == RECORDING:
             self.waveform.push(self.recorder.level)
             self.dot.set_state("record", theme.pulse(time.monotonic() / 1.4 % 1.0))
@@ -442,6 +518,8 @@ class MainWindow(QMainWindow):
         self.dot.set_state({IDLE: "faint", RECORDING: "record", PAUSED: "warn"}[state])
         self.waveform.set_mode(state)
         self.start_button.setVisible(state == IDLE)
+        self.mic_combo.setEnabled(state == IDLE)
+        self.app_combo.setEnabled(state == IDLE)
         self.pause_button.setVisible(state != IDLE)
         self.stop_button.setVisible(state != IDLE)
         if hasattr(self, "play_button"):
@@ -772,7 +850,8 @@ class MainWindow(QMainWindow):
         self.speakers_title = label("", "cardTitle")
         panel.addWidget(self.speakers_title)
         panel.addWidget(label("Type a name to replace “Speaker N” everywhere. Two speakers that are "
-                              "really one person can be merged.", "caption", wrap=True))
+                              "really one person can be merged. Text that someone else said: select it "
+                              "and right-click.", "caption", wrap=True))
         panel.addSpacing(8)
         self.undo_bar = QFrame()
         self.undo_bar.setObjectName("undoBar")
@@ -783,7 +862,7 @@ class MainWindow(QMainWindow):
         self.undo_label.setMinimumWidth(0)
         undo.addWidget(self.undo_label, 1)
         undo_button = Button("Undo", None, "link")
-        undo_button.clicked.connect(self._undo_merge)
+        undo_button.clicked.connect(self._undo)
         undo.addWidget(undo_button)
         self.undo_bar.hide()
         panel.addWidget(self.undo_bar)
@@ -805,6 +884,8 @@ class MainWindow(QMainWindow):
         card.body.addWidget(self.result_view, 1)
 
         self.text_view.viewport().installEventFilter(self)
+        self.text_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.text_view.customContextMenuRequested.connect(self._text_menu)
         # Fires for the user's own scrolling (wheel, keys, scroll bar), not for ours.
         self.text_view.verticalScrollBar().actionTriggered.connect(self._on_user_scroll)
         self.scroll_animation = QVariantAnimation(self)
@@ -849,9 +930,9 @@ class MainWindow(QMainWindow):
             self.speakers_layout.addWidget(self._speaker_entry(transcript, speaker, total))
         self.speakers_layout.addStretch(1)
         if reload_audio:
-            self.before_merge = None
+            self.before_edit = None
             self._load_audio(transcript)
-        self.undo_bar.setVisible(self.before_merge is not None)
+        self.undo_bar.setVisible(self.before_edit is not None)
         self._refresh_timeline()
         self._render_text()
 
@@ -911,19 +992,79 @@ class MainWindow(QMainWindow):
         if self.transcript is None:
             return
         source_name, target_name = self.transcript.name(source), self.transcript.name(target)
-        self.before_merge = (copy.deepcopy(self.transcript.segments), dict(self.transcript.speaker_names))
+        self._remember_for_undo()
         self.transcript.merge_speakers(source, target)
         self._save_quietly()
         self.undo_label.setText(f"Merged {source_name} into {target_name}.")
         self._show_transcript(reload_audio=False)
 
-    def _undo_merge(self) -> None:
-        if self.transcript is None or self.before_merge is None:
+    def _remember_for_undo(self) -> None:
+        self.before_edit = (copy.deepcopy(self.transcript.segments), dict(self.transcript.speaker_names))
+
+    def _undo(self) -> None:
+        if self.transcript is None or self.before_edit is None:
             return
-        self.transcript.segments, self.transcript.speaker_names = self.before_merge
-        self.before_merge = None
+        self.transcript.segments, self.transcript.speaker_names = self.before_edit
+        self.before_edit = None
         self._save_quietly()
         self._show_transcript(reload_audio=False)
+
+    def _text_menu(self, point) -> None:
+        menu = self._build_text_menu(point)
+        menu.exec(self.text_view.viewport().mapToGlobal(point))
+        menu.deleteLater()
+
+    def _build_text_menu(self, point) -> QMenu:
+        """The usual Copy and Select All, and for selected text in a
+        transcript with speakers: giving it to another speaker."""
+        menu = self.text_view.createStandardContextMenu(point)
+        selection = self._selected_text_range()
+        if selection is not None:
+            first_action = menu.actions()[0] if menu.actions() else None
+            transcript = self.transcript
+            speakers = QMenu("Move to speaker", menu)
+            for speaker in transcript.speakers:
+                action = speakers.addAction(self._speaker_icon(speaker), transcript.name(speaker))
+                action.triggered.connect(lambda _=False, s=speaker: self._move_text(*selection, s))
+            new = QAction("Move to a new speaker", menu)
+            new.triggered.connect(lambda: self._move_text(*selection, None))
+            menu.insertMenu(first_action, speakers)
+            menu.insertAction(first_action, new)
+            menu.insertSeparator(first_action)
+        return menu
+
+    def _selected_text_range(self) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        """The selection as (line, character) at each end, or None when
+        nothing in a transcript with speakers is selected."""
+        cursor = self.text_view.textCursor()
+        if self.transcript is None or not self.transcript.has_speakers or not cursor.hasSelection():
+            return None
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        lines = list(enumerate(self.segment_spans))
+        # A selection that starts in a speaker's name or time starts with the
+        # line below them, and one that ends there ends with the line above.
+        first = next(((i, max(0, start - begin)) for i, (begin, finish) in lines if start <= finish), None)
+        last = next(((i, min(finish, end) - begin) for i, (begin, finish) in reversed(lines) if end >= begin), None)
+        if first is None or last is None or first > last:
+            return None
+        return first, last
+
+    def _move_text(self, first: tuple[int, int], last: tuple[int, int], speaker: int | None) -> None:
+        """Gives the selected text to `speaker`, or to a new one with None."""
+        if self.transcript is None:
+            return
+        self._remember_for_undo()
+        moved_to = self.transcript.move_text(first, last, speaker)
+        if moved_to is None:
+            self.before_edit = None
+            return
+        self._save_quietly()
+        self.undo_label.setText(f"Moved the text to {self.transcript.name(moved_to)}.")
+        self._show_transcript(reload_audio=False)
+        if speaker is None and moved_to in self.speaker_edits:
+            # Ready to type the new speaker's name.
+            self.speakers_toggle.setChecked(True)
+            self.speaker_edits[moved_to].setFocus()
 
     def _transcript_html(self) -> str:
         t = theme.current()
