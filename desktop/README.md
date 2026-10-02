@@ -4,6 +4,7 @@ The same app as the macOS version, for **Windows 10/11 (64-bit)** and **Linux (x
 
 - **Transcribe an existing file:** choose or drag in an `.m4a`, `.mp3`, `.wav` or other audio file.
 - **Record a meeting:** Start → Pause/Resume → Stop. Paused sections are left out. Everything is saved to **one** audio file, as **MP3 on Windows** and **Ogg (Opus) on Linux**, and when you stop, the app asks **“Transcribe the recording?”**.
+- **Record both sides of a call (Linux):** choose the microphone, and under *Also record sound from* choose the app the meeting is in (Teams, Zoom, a browser…) or *All sound from this computer*. The app's sound is mixed with the microphone into the same recording, so the people you're talking to are transcribed too. An app shows up in the list once it plays sound; if you choose it before the call starts, it's picked up as soon as it does. Wear headphones, otherwise the microphone hears the call from the speakers as well.
 - **Who said what:** each part of the transcript is labelled *Speaker 1*, *Speaker 2*… You can rename them, for example to *Anna*, and the transcript updates everywhere. If one person was split into two speakers, merge them with the button next to the name (*Undo* is offered right after).
 - Transcripts get timestamps and are saved automatically as `.txt`, in the same format as the Mac app.
 - **Open a saved transcript:** *Open transcript…* (or drop a `.txt` on the window) shows it again, with its recording. The recording is found by the file name on the transcript's first line, next to the transcript, in the recordings folder or in Downloads; otherwise choose it with *Find audio file…*. Exact timings are kept in the app's data folder (`~/.local/share/LeosLyssnare/Transcript data`, `%LOCALAPPDATA%\LeosLyssnare\Transcript data`), so word-by-word following works after reopening too.
@@ -16,7 +17,7 @@ On the Mac, the app uses Apple's Neural Engine through WhisperKit. That only exi
 | Speech to text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2, int8 on the CPU) | OpenAI Whisper: Large v3 Turbo, Small or Base |
 | Who is speaking | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (ONNX Runtime) | pyannote segmentation 3.0 + WeSpeaker ResNet34 voice embeddings |
 | Interface | Qt 6 (PySide6) | – |
-| Recording | PortAudio (sounddevice), MP3/Opus encoding with FFmpeg (PyAV) | – |
+| Recording | PortAudio (sounddevice) on Windows; on Linux PulseAudio/PipeWire through `pactl` and `parec`. MP3/Opus encoding with FFmpeg (PyAV) | – |
 
 No audio or text ever leaves the computer.
 
@@ -91,7 +92,7 @@ For speech, Opus at 64 kbit/s sounds as good as MP3 at twice the size. Both form
 ## Microphone access
 
 - **Windows:** if recording fails, turn on **Settings › Privacy & security › Microphone › Let desktop apps access your microphone**.
-- **Linux:** the app records from the default input device. Pick the microphone in your sound settings.
+- **Linux:** choose the microphone under *Microphone* (*Default* follows your sound settings). The list and the choice of app need PulseAudio or PipeWire and their tools `pactl` and `parec`, which desktops normally have; if they're missing (`sudo apt install pulseaudio-utils`, Fedora: `pulseaudio-utils`, Arch: `libpulse`), the app records from the default input device and the choices are hidden. An app is recorded at the volume it plays at, so don't mute it in the volume mixer.
 
 ## Building it yourself
 
@@ -148,6 +149,7 @@ desktop/
     engine.py                   Model downloads, transcription, speaker identification
     transcript.py               Transcript model, speaker turns, .txt format
     recorder.py                 Recording with pause/resume into one .mp3 / .ogg
+    pulse.py                    Linux: lists microphones and apps playing sound, captures them
     paths.py                    File locations
     keepawake.py                Stops the computer from sleeping while working
     resources/icon.png

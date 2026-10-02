@@ -4,11 +4,16 @@ MP3 on Windows, Ogg (Opus) on Linux.
 The microphone stream stays open for the whole recording. While paused, the
 incoming audio is simply dropped, so the finished file contains every
 unpaused part back to back and none of the paused time.
+
+On Linux with PulseAudio or PipeWire, the microphone can be chosen, and the
+sound of another app (the meeting app, say) can be mixed in, so both sides of
+a call end up in the recording.
 """
 
 from __future__ import annotations
 
 import math
+import os
 import queue
 import sys
 import threading
@@ -16,7 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import keepawake, paths
+from . import keepawake, paths, pulse
 
 IDLE, RECORDING, PAUSED = "idle", "recording", "paused"
 
@@ -67,6 +72,13 @@ class AudioRecorder:
         self._sample_rate = 44_100
         self._frames = 0
         self._level = 0.0
+        # Linux with PulseAudio or PipeWire only: the sound server's name for
+        # the microphone (None: the default one), and the app whose sound is
+        # mixed in (an Application key, pulse.ALL_SOUND, or None for none).
+        self.microphone: str | None = None
+        self.application: str | None = None
+        self._capture: pulse.Capture | None = None
+        self._app: pulse.AppAudio | None = None
 
     @property
     def elapsed(self) -> float:
@@ -78,11 +90,53 @@ class AudioRecorder:
         """Input level in 0...1 for the meter."""
         return self._level if self.state == RECORDING else 0.0
 
+    @property
+    def hearing_app(self) -> bool:
+        """Whether the chosen app has sound streams being recorded right now."""
+        return self._app is not None and self._app.stream_count > 0
+
     def start(self) -> None:
         if self.state != IDLE:
             return
         import av  # noqa: F401  (fail early if the encoder is missing)
 
+        use_pulse = pulse.available()
+        if self.application and not use_pulse:
+            raise RecorderError(
+                "Recording another app's sound needs PulseAudio or PipeWire and their tools pactl and "
+                "parec. On Debian and Ubuntu they're in the package “pulseaudio-utils”."
+            )
+        if use_pulse:
+            self._sample_rate = pulse.RATE
+        else:
+            self._sample_rate = self._open_portaudio()
+
+        self.path = paths.new_recording_path(self.format.extension)
+        self._frames = 0
+        self._level = 0.0
+        self._writer_error = None
+        self._queue = queue.Queue()
+        self._writer = threading.Thread(
+            target=self._write, args=(self.path, self._sample_rate, self._queue), daemon=True
+        )
+        self._writer.start()
+        self.state = RECORDING
+        keepawake.acquire()
+        try:
+            if use_pulse:
+                self._start_pulse()
+            else:
+                self._stream.start()
+        except Exception as error:
+            self._close()
+            if os.path.exists(self.path):  # nothing was recorded
+                os.remove(self.path)
+            if isinstance(error, RecorderError):
+                raise
+            raise RecorderError(f"Couldn't start recording: {error}. {_microphone_hint()}") from error
+
+    def _open_portaudio(self) -> int:
+        """Opens the default input with PortAudio and returns its sample rate."""
         try:
             import sounddevice as sd
         except OSError as error:  # PortAudio missing
@@ -93,32 +147,32 @@ class AudioRecorder:
 
         try:
             device = sd.query_devices(kind="input")
-            self._sample_rate = int(device["default_samplerate"]) or 44_100
+            sample_rate = int(device["default_samplerate"]) or 44_100
         except Exception as error:
             raise RecorderError(f"No microphone was found. {_microphone_hint()}") from error
 
-        self.path = paths.new_recording_path(self.format.extension)
-        self._frames = 0
-        self._level = 0.0
-        self._writer_error = None
-        self._queue = queue.Queue()
         try:
             self._stream = sd.InputStream(
-                samplerate=self._sample_rate,
+                samplerate=sample_rate,
                 channels=1,
                 dtype="float32",
-                callback=self._on_audio,
+                callback=self._on_portaudio,
             )
         except Exception as error:
             raise RecorderError(f"Couldn't start recording: {error}. {_microphone_hint()}") from error
+        return sample_rate
 
-        self._writer = threading.Thread(
-            target=self._write, args=(self.path, self._sample_rate, self._queue), daemon=True
-        )
-        self._writer.start()
-        self.state = RECORDING
-        self._stream.start()
-        keepawake.acquire()
+    def _start_pulse(self) -> None:
+        if self.application:
+            # First, so the app's sound is already flowing when the microphone's arrives.
+            self._app = pulse.AppAudio(self.application)
+            self._app.start()
+        self._capture = pulse.Capture([f"--device={self.microphone or '@DEFAULT_SOURCE@'}"], self._on_audio)
+        self._capture.start()
+        # A microphone that can't be opened is reported now rather than when recording stops.
+        self._capture.started.wait(3)
+        if self._capture.error:
+            raise RecorderError(f"The microphone couldn't be opened ({self._capture.error}). {_microphone_hint()}")
 
     def pause(self) -> None:
         if self.state == RECORDING:
@@ -132,6 +186,12 @@ class AudioRecorder:
         """Finishes the file and returns its location."""
         if self.state == IDLE:
             return None
+        self._close()
+        if self._writer_error is not None:
+            raise RecorderError(f"The recording couldn't be saved: {self._writer_error}")
+        return self.path
+
+    def _close(self) -> None:
         self.state = IDLE
         try:
             if self._stream is not None:
@@ -139,20 +199,29 @@ class AudioRecorder:
                 self._stream.close()
         finally:
             self._stream = None
+            for source in (self._capture, self._app):
+                if source is not None:
+                    source.stop()
+            self._capture = self._app = None
             self._queue.put(None)
             if self._writer is not None:
                 self._writer.join()
                 self._writer = None
             keepawake.release()
-        if self._writer_error is not None:
-            raise RecorderError(f"The recording couldn't be saved: {self._writer_error}")
-        return self.path
 
     # Runs on PortAudio's audio thread: keep it short.
-    def _on_audio(self, indata, frames, time, status) -> None:  # noqa: ARG002
+    def _on_portaudio(self, indata, frames, time, status) -> None:  # noqa: ARG002
+        self._on_audio(indata[:, 0].copy())
+
+    # Runs on the microphone's audio thread: keep it short.
+    def _on_audio(self, samples: np.ndarray) -> None:
+        app = self._app
         if self.state != RECORDING:
+            if app is not None:
+                app.take(len(samples))  # the app's sound while paused is left out too
             return
-        samples = indata[:, 0].copy()
+        if app is not None:
+            samples = np.clip(samples + app.take(len(samples)), -1.0, 1.0)
         self._queue.put(samples)
         self._frames += len(samples)
         rms = float(np.sqrt(np.mean(samples * samples))) if len(samples) else 0.0

@@ -214,13 +214,49 @@ def test_open_transcript_without_its_recording(window, tmp_path, monkeypatch):
 
 
 def test_system_programs_get_the_systems_libraries(monkeypatch):
+    from leoslyssnare import paths
+
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/leoslyssnare/_internal")
     monkeypatch.setenv("QT_PLUGIN_PATH", "/opt/leoslyssnare/_internal/PySide6/Qt/plugins")
     monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
-    env = appmod.system_env()
+    env = paths.system_env()
     assert "LD_LIBRARY_PATH" not in env and "QT_PLUGIN_PATH" not in env
 
     monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/local/lib")
-    env = appmod.system_env()
+    env = paths.system_env()
     assert env["LD_LIBRARY_PATH"] == "/usr/local/lib" and "LD_LIBRARY_PATH_ORIG" not in env
+
+
+def test_choose_microphone_and_meeting_app(qapp, tmp_path, monkeypatch):
+    from leoslyssnare import pulse
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(pulse, "available", lambda: True)
+    monkeypatch.setattr(pulse, "default_microphone", lambda: "jabra")
+    monkeypatch.setattr(pulse, "microphones", lambda: [pulse.Microphone("jabra", "Jabra Engage"),
+                                                       pulse.Microphone("cam", "Konftel Cam10")])
+    playing = [pulse.Application("teams-for-linux", "Chromium (teams-for-linux)")]
+    monkeypatch.setattr(pulse, "applications", lambda: list(playing))
+    window = appmod.MainWindow()
+    try:
+        mics = [window.mic_combo.itemText(i) for i in range(window.mic_combo.count())]
+        assert mics == ["Default (Jabra Engage)", "Jabra Engage", "Konftel Cam10"]
+        window.mic_combo.setCurrentIndex(2)
+        window.app_combo.setCurrentIndex(window.app_combo.findData("teams-for-linux"))
+        assert "headphones" in window.app_caption.text()
+
+        # The app has stopped playing: it stays chosen, and the list refreshes when opened.
+        playing.clear()
+        window.app_combo.opening.emit()
+        assert window.app_combo.currentText() == "Chromium (teams-for-linux)"
+    finally:
+        window.close()
+
+    # Remembered next time.
+    window = appmod.MainWindow()
+    try:
+        assert window.mic_combo.currentData() == "cam"
+        assert window.app_combo.currentData() == "teams-for-linux"
+    finally:
+        window.close()

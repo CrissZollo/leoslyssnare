@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGridLayout, Q
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSizePolicy,
                                QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
 
-from . import engine, icons, keepawake, paths, theme
+from . import engine, icons, keepawake, paths, pulse, theme
+from .paths import system_env
 from .player import AudioPlayer, PlayerError
 from .recorder import IDLE, PAUSED, RECORDING, AudioRecorder, RecorderError
 from .theme import setup_application  # noqa: F401  (re-exported for the entry point)
@@ -35,22 +36,6 @@ SPEAKERS_WIDTH = 268
 
 def resource_path(name: str) -> str:
     return theme.resource_path(name)
-
-
-def system_env() -> dict[str, str]:
-    """The environment for system programs the app starts. A PyInstaller build
-    points LD_LIBRARY_PATH at its own Qt, and Qt programs such as Dolphin or
-    kde-open fail to start when they load that instead of the system's."""
-    env = dict(os.environ)
-    if getattr(sys, "frozen", False):
-        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
-        if original is None:
-            env.pop("LD_LIBRARY_PATH", None)
-        else:
-            env["LD_LIBRARY_PATH"] = original
-        for name in ("QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "QML2_IMPORT_PATH"):
-            env.pop(name, None)
-    return env
 
 
 def open_folder(path: str) -> None:
@@ -373,6 +358,33 @@ class MainWindow(QMainWindow):
         self.waveform = Waveform()
         card.body.addWidget(self.waveform)
 
+        # Choosing the microphone and an app to record needs PulseAudio or PipeWire (Linux).
+        self.source_controls = QWidget()
+        sources = QVBoxLayout(self.source_controls)
+        sources.setContentsMargins(0, 4, 0, 4)
+        sources.setSpacing(6)
+        sources.addWidget(label("Microphone", "muted"))
+        self.mic_combo = Combo()
+        self.mic_combo.opening.connect(self._fill_microphones)
+        self.mic_combo.currentIndexChanged.connect(
+            lambda: self.settings.setValue("microphone", self.mic_combo.currentData()))
+        sources.addWidget(self.mic_combo)
+        sources.addSpacing(4)
+        sources.addWidget(label("Also record sound from", "muted"))
+        self.app_combo = Combo()
+        self.app_combo.setToolTip("The app the meeting is in, so the other people in it are recorded too")
+        self.app_combo.opening.connect(self._fill_applications)
+        self.app_combo.currentIndexChanged.connect(self._on_application_changed)
+        sources.addWidget(self.app_combo)
+        self.app_caption = label("", "caption", wrap=True)
+        sources.addWidget(self.app_caption)
+        card.body.addWidget(self.source_controls)
+        self.can_choose_sources = pulse.available()
+        self.source_controls.setVisible(self.can_choose_sources)
+        if self.can_choose_sources:
+            self._fill_microphones()
+            self._fill_applications()
+
         row = QHBoxLayout()
         row.setSpacing(10)
         self.start_button = Button("Start recording", "record", "record", "lg")
@@ -387,10 +399,60 @@ class MainWindow(QMainWindow):
         card.body.addLayout(row)
         return card
 
+    def _fill_microphones(self) -> None:
+        saved = self.settings.value("microphone", "") or ""
+        microphones = pulse.microphones()
+        default = pulse.default_microphone()
+        default_name = next((mic.description for mic in microphones if mic.name == default), None)
+        self.mic_combo.blockSignals(True)
+        self.mic_combo.clear()
+        self.mic_combo.addItem(f"Default ({default_name})" if default_name else "Default microphone", "")
+        for mic in microphones:
+            self.mic_combo.addItem(mic.description, mic.name)
+        # A microphone that isn't connected now falls back to the default, but stays remembered.
+        self.mic_combo.setCurrentIndex(max(0, self.mic_combo.findData(saved)))
+        self.mic_combo.blockSignals(False)
+
+    def _fill_applications(self) -> None:
+        saved = self.settings.value("meetingApp", "") or ""
+        self.app_combo.blockSignals(True)
+        self.app_combo.clear()
+        self.app_combo.addItem("Nothing else (only the microphone)", "")
+        self.app_combo.addItem("All sound from this computer", pulse.ALL_SOUND)
+        for app in pulse.applications():
+            self.app_combo.addItem(app.name, app.key)
+        if saved and self.app_combo.findData(saved) < 0:
+            # Remembered from last time: it's recorded as soon as it plays sound.
+            self.app_combo.addItem(self.settings.value("meetingAppName", saved), saved)
+        self.app_combo.setCurrentIndex(max(0, self.app_combo.findData(saved)))
+        self.app_combo.blockSignals(False)
+        self._refresh_app_caption()
+
+    def _on_application_changed(self) -> None:
+        self.settings.setValue("meetingApp", self.app_combo.currentData())
+        self.settings.setValue("meetingAppName", self.app_combo.currentText())
+        self._refresh_app_caption()
+
+    def _refresh_app_caption(self) -> None:
+        choice = self.app_combo.currentData()
+        name = self.app_combo.currentText()
+        if self.recorder.state != IDLE and self.recorder.application not in (None, pulse.ALL_SOUND):
+            text = (f"Recording the sound from {name}." if self.recorder.hearing_app
+                    else f"{name} isn't playing sound. It's recorded as soon as it does.")
+        elif not choice:
+            text = "To record a call, choose the app it's in. Apps show up here once they play sound."
+        else:
+            text = "Use headphones, so the microphone doesn't pick up the other people a second time."
+        if self.app_caption.text() != text:
+            self.app_caption.setText(text)
+
     def _start_recording(self) -> None:
         # Otherwise the microphone would pick up the playback.
         self.player.pause()
         self._refresh_player()
+        if self.can_choose_sources:
+            self.recorder.microphone = self.mic_combo.currentData() or None
+            self.recorder.application = self.app_combo.currentData() or None
         try:
             self.recorder.start()
         except RecorderError as error:
@@ -431,6 +493,8 @@ class MainWindow(QMainWindow):
 
     def _tick(self) -> None:
         self.elapsed_label.setText(timestamp(self.recorder.elapsed))
+        if self.can_choose_sources:
+            self._refresh_app_caption()
         if self.recorder.state == RECORDING:
             self.waveform.push(self.recorder.level)
             self.dot.set_state("record", theme.pulse(time.monotonic() / 1.4 % 1.0))
@@ -442,6 +506,8 @@ class MainWindow(QMainWindow):
         self.dot.set_state({IDLE: "faint", RECORDING: "record", PAUSED: "warn"}[state])
         self.waveform.set_mode(state)
         self.start_button.setVisible(state == IDLE)
+        self.mic_combo.setEnabled(state == IDLE)
+        self.app_combo.setEnabled(state == IDLE)
         self.pause_button.setVisible(state != IDLE)
         self.stop_button.setVisible(state != IDLE)
         if hasattr(self, "play_button"):
