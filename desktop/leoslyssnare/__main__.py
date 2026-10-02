@@ -17,6 +17,16 @@ def _use_bundled_portaudio() -> None:
     ctypes.util.find_library = lambda name: bundled if name == "portaudio" else find_library(name)
 
 
+def _ensure_output_streams() -> None:
+    """A windowed Windows build has no console, so sys.stdout and sys.stderr
+    are None. Libraries that print, like the progress bar huggingface_hub
+    shows while downloading a speech model, then fail with "'NoneType' object
+    has no attribute 'write'". Give them somewhere harmless to write instead."""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+
+
 def _self_test_wasapi() -> None:
     """Runs the COM calls behind choosing an app and capturing its sound. A
     computer without sound devices (like a build server) can't do it all, so
@@ -106,6 +116,7 @@ def run() -> int:
     import multiprocessing
 
     multiprocessing.freeze_support()
+    _ensure_output_streams()
     _use_bundled_portaudio()
     if "--self-test" in sys.argv:
         # A windowed build has no console, so the result also goes to a file
