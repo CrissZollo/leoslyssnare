@@ -438,7 +438,7 @@ struct ContentView: View {
                         NSWorkspace.shared.open(release.page)
                     }
                 }
-                .buttonStyle(FilledButtonStyle())
+                .buttonStyle(FilledButtonStyle(fill: Theme.brand, foreground: Theme.brandInk, height: 34))
             }
         }
         .padding(EdgeInsets(top: 8, leading: 18, bottom: 8, trailing: 10))

@@ -18,7 +18,7 @@ final class UpdateChecker: ObservableObject {
     }
 
     static let repo = "CrissZollo/leoslyssnare"
-    static let tagPrefix = "desktop-v"
+    nonisolated static let tagPrefix = "desktop-v"
     private static let skippedKey = "skippedUpdate"
 
     @Published private(set) var available: Release?
