@@ -12,12 +12,12 @@ import tempfile
 import threading
 import time
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QSettings, Qt, QTimer, QUrl, QVariantAnimation,
+from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QRect, QSettings, Qt, QTimer, QUrl, QVariantAnimation,
                             Signal)
 from PySide6.QtGui import (QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPixmap, QTextCharFormat,
                            QTextCursor)
-from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSizePolicy,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSizePolicy,
                                QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
 
 from . import __version__, engine, icons, keepawake, paths, sources, theme, updater
@@ -34,6 +34,7 @@ AUDIO_EXTENSIONS = paths.AUDIO_EXTENSIONS
 
 SIDEBAR_WIDTH = 372
 SPEAKERS_WIDTH = 268
+FADED_SHARE = 0.25  # how much of a hidden speaker's text colour is left
 
 
 def resource_path(name: str) -> str:
@@ -99,6 +100,10 @@ class Worker(QObject):
         threading.Thread(target=target, daemon=True).start()
 
 
+PROJECT_URL = "https://github.com/CrissZollo/leoslyssnare"
+SUPPORT_URL = "https://ko-fi.com/crisszollo"
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -119,6 +124,11 @@ class MainWindow(QMainWindow):
         self.cancel_flag: engine.CancelFlag | None = None
         self.speaker_edits: dict[int, QLineEdit] = {}
         self.speaker_avatars: dict[int, Avatar] = {}
+        self.speaker_turns: dict[int, list[int]] = {}  # the segments each speaker has, in order
+        self.turn_labels: dict[int, QLabel] = {}
+        self.hidden_speakers: set[int] = set()  # their text is faded in the transcript
+        self._turn_cursor: float | None = None  # where the arrows last went, when there's no recording
+        self._flash_span: tuple[int, int] | None = None
         # The transcript as it was before the last merge or moved text, for Undo.
         self.before_edit: tuple[list, dict] | None = None
 
@@ -168,6 +178,7 @@ class MainWindow(QMainWindow):
         right.addWidget(self._build_transcript_section(), 1)
         columns.addLayout(right, 1)
         root.addLayout(columns, 1)
+        root.addLayout(self._build_footer())
         self.setCentralWidget(central)
 
         self.timer = QTimer(self)
@@ -176,6 +187,10 @@ class MainWindow(QMainWindow):
         self.play_timer = QTimer(self)
         self.play_timer.setInterval(40)
         self.play_timer.timeout.connect(self._on_play_tick)
+        self.flash_timer = QTimer(self)
+        self.flash_timer.setSingleShot(True)
+        self.flash_timer.setInterval(1400)
+        self.flash_timer.timeout.connect(self._end_flash)
 
         theme.bus.changed.connect(self._on_theme_changed)
         self._on_theme_changed()
@@ -190,6 +205,29 @@ class MainWindow(QMainWindow):
         self.pill_icon.setPixmap(icons.pixmap("shield-check", t.ok, 16))
         if self.transcript is not None:
             self._render_text()
+
+    # MARK: - Footer
+
+    def _build_footer(self) -> QHBoxLayout:
+        """Bottom left: the version, the project and who made it."""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(label(f"Leos Lyssnare {__version__}", "caption"))
+        row.addWidget(label("·", "caption"))
+        row.addWidget(self._footer_link("GitHub", PROJECT_URL))
+        row.addWidget(label("·", "caption"))
+        row.addWidget(label("by CrissZollo", "caption"))
+        row.addWidget(label("·", "caption"))
+        row.addWidget(self._footer_link("Support on Ko-fi", SUPPORT_URL))
+        row.addStretch(1)
+        return row
+
+    @staticmethod
+    def _footer_link(text: str, url: str) -> Button:
+        button = Button(text, None, "link", tooltip=url)
+        button.setStyleSheet("QPushButton { font-size: 12px; }")
+        button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        return button
 
     # MARK: - Header
 
@@ -1041,6 +1079,15 @@ class MainWindow(QMainWindow):
         self.title_label.setText(transcript.source_name)
         self.title_label.setToolTip(transcript.source_path)
         self.reveal_button.setVisible(transcript.saved_path is not None)
+        if reload_audio:
+            self.hidden_speakers.clear()
+            self._turn_cursor = None
+            self._flash_span = None
+        else:
+            # A speaker with no text left (merged away, or all of it moved) can't stay hidden.
+            self.hidden_speakers &= set(transcript.speakers)
+        self.speaker_turns = {s: [i for i, seg in enumerate(transcript.segments) if seg.speaker == s]
+                              for s in transcript.speakers}
 
         clear_layout(self.chips)
         chips = []
@@ -1058,6 +1105,7 @@ class MainWindow(QMainWindow):
         clear_layout(self.speakers_layout)
         self.speaker_edits = {}
         self.speaker_avatars = {}
+        self.turn_labels = {}
         self.speakers_toggle.setVisible(transcript.has_speakers)
         self.speakers_panel.setVisible(transcript.has_speakers and self.speakers_toggle.isChecked())
         self.speakers_title.setText(f"Speakers ({len(transcript.speakers)})")
@@ -1090,10 +1138,15 @@ class MainWindow(QMainWindow):
         edit.textEdited.connect(lambda text, s=speaker: self._rename_speaker(s, text))
         grid.addWidget(edit, 0, 1)
 
+        # The eye and the merge button share one cell, small, so the name keeps its room.
+        controls = QHBoxLayout()
+        controls.setSpacing(0)
+        grid.addLayout(controls, 0, 2)
+
         others = [s for s in transcript.speakers if s != speaker]
         if others:
             merge = Button("", "merge", "ghost", tooltip="Same person as another speaker? Merge them")
-            merge.setProperty("shape", "square")
+            self._compact(merge, 30, 34)
             menu = QMenu(merge)
             menu.addAction(f"{transcript.name(speaker)} is the same person as…").setEnabled(False)
             menu.addSeparator()
@@ -1101,7 +1154,17 @@ class MainWindow(QMainWindow):
                 action = menu.addAction(self._speaker_icon(other), transcript.name(other))
                 action.triggered.connect(lambda _=False, a=speaker, b=other: self._merge_speakers(a, b))
             merge.clicked.connect(lambda _=False, b=merge, m=menu: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
-            grid.addWidget(merge, 0, 2)
+            controls.addWidget(merge)
+
+        # The eye fades everything this speaker says in the transcript.
+        hidden = speaker in self.hidden_speakers
+        eye = Button("", "eye-off" if hidden else "eye", "ghost")
+        self._compact(eye, 30, 34)
+        eye.setCheckable(True)
+        eye.setChecked(hidden)
+        eye.setToolTip(self._eye_tooltip(speaker, hidden))
+        eye.toggled.connect(lambda on, s=speaker, b=eye: self._set_speaker_hidden(s, on, b))
+        controls.insertWidget(0, eye)
 
         seconds = transcript.speaking_time(speaker)
         share = seconds / total
@@ -1110,14 +1173,136 @@ class MainWindow(QMainWindow):
         bar.setToolTip(f"Spoke for {timestamp(seconds)} ({round(share * 100)} % of the meeting)")
         grid.addWidget(bar, 1, 1, 1, 2)
         grid.addWidget(label(f"{timestamp(seconds)} · {round(share * 100)} %", "caption"), 2, 1, 1, 2)
+        grid.addLayout(self._turn_navigator(transcript, speaker), 3, 1, 1, 2)
         sample = label(f"“{transcript.sample(speaker)}”", "caption", wrap=True)
         sample.setMinimumWidth(0)
-        grid.addWidget(sample, 3, 1, 1, 2)
+        # A wrapped label reports one line until it has a width, so give it its height up front.
+        sample.ensurePolished()
+        room = SPEAKERS_WIDTH - 16 - 8 - 8 - 34 - 10  # panel margins, the scroll bar's gap, avatar
+        sample.setMinimumHeight(sample.fontMetrics().boundingRect(
+            QRect(0, 0, room, 10000), Qt.TextWordWrap, sample.text()).height())
+        grid.addWidget(sample, 4, 1, 1, 2)
         grid.setColumnStretch(1, 1)
 
         self.speaker_edits[speaker] = edit
         self.speaker_avatars[speaker] = avatar
+        self._dim_avatar(speaker, hidden)
+        # Without this the scroll area squeezes the rows together instead of scrolling.
+        entry.setMinimumHeight(grid.sizeHint().height())
         return entry
+
+    @staticmethod
+    def _compact(button: Button, width: int, height: int) -> None:
+        """A smaller button than the square ones, which are 34 px."""
+        size = f"min-width:{width}px; max-width:{width}px; min-height:{height}px; max-height:{height}px; padding:0;"
+        button.setStyleSheet(f"QPushButton, QPushButton:focus {{ {size} }}")
+
+    def _eye_tooltip(self, speaker: int, hidden: bool) -> str:
+        name = self.transcript.name(speaker) if self.transcript else f"Speaker {speaker}"
+        return f"Show what {name} says" if hidden else f"Fade what {name} says in the transcript"
+
+    def _set_speaker_hidden(self, speaker: int, hidden: bool, button: Button) -> None:
+        if hidden:
+            self.hidden_speakers.add(speaker)
+        else:
+            self.hidden_speakers.discard(speaker)
+        button.set_icon_name("eye-off" if hidden else "eye")
+        button.setToolTip(self._eye_tooltip(speaker, hidden))
+        self._dim_avatar(speaker, hidden)
+        self._render_text()
+
+    def _dim_avatar(self, speaker: int, hidden: bool) -> None:
+        avatar = self.speaker_avatars.get(speaker)
+        if avatar is None:
+            return
+        effect = None
+        if hidden:
+            effect = QGraphicsOpacityEffect(avatar)
+            effect.setOpacity(0.4)
+        avatar.setGraphicsEffect(effect)
+
+    def _turn_navigator(self, transcript: Transcript, speaker: int) -> QHBoxLayout:
+        """Arrows to the previous and next time this speaker talks."""
+        name = transcript.name(speaker)
+        row = QHBoxLayout()
+        row.setSpacing(2)
+        previous = Button("", "chevron-left", "ghost", tooltip=f"Previous time {name} speaks")
+        following = Button("", "chevron-right", "ghost", tooltip=f"Next time {name} speaks")
+        for button in (previous, following):
+            self._compact(button, 28, 26)
+        previous.clicked.connect(lambda _=False, s=speaker: self._go_to_turn(s, forward=False))
+        following.clicked.connect(lambda _=False, s=speaker: self._go_to_turn(s, forward=True))
+        count = len(self.speaker_turns.get(speaker, []))
+        counter = label("1 turn" if count == 1 else f"{count} turns", "caption")
+        counter.setAlignment(Qt.AlignCenter)
+        counter.setMinimumWidth(70)
+        self.turn_labels[speaker] = counter
+        row.addWidget(previous)
+        row.addWidget(counter)
+        row.addWidget(following)
+        row.addStretch(1)
+        return row
+
+    def _reference_time(self) -> float | None:
+        """Where the user is: the playback position, or else the turn last
+        jumped to when there's no recording to play."""
+        if self._playhead_shown and self.player.path is not None:
+            return self.player.position
+        return self._turn_cursor
+
+    def _go_to_turn(self, speaker: int, forward: bool) -> None:
+        """Goes to the speaker's next (or previous) turn counted from where the
+        user is, and from the other end after the last (or before the first).
+        Plays from there when there's a recording; the transcript scrolls to it
+        either way."""
+        turns = self.speaker_turns.get(speaker)
+        if self.transcript is None or not turns:
+            return
+        segments = self.transcript.segments
+        here = self._reference_time()
+        if here is None:
+            target = turns[0] if forward else turns[-1]
+        elif forward:
+            target = next((i for i in turns if segments[i].start > here + 0.05), turns[0])
+        else:
+            target = next((i for i in reversed(turns) if segments[i].start < here - 0.05), turns[-1])
+        start = segments[target].start
+        self._turn_cursor = start
+        if self.player.path is not None:
+            self._seek(start)  # highlights the line and scrolls to it
+        else:
+            self._scroll_to_character(self.segment_spans[target][0])
+            self._flash_segment(target)
+        self._refresh_turn_labels(start)
+
+    def _refresh_turn_labels(self, seconds: float | None) -> None:
+        """"2 of 5" under a speaker's name while the turn at `seconds` is theirs."""
+        if self.transcript is None or not self.turn_labels:
+            return
+        segments = self.transcript.segments
+        current = None
+        if seconds is not None:
+            index = bisect.bisect_right([s.start for s in segments], seconds + 0.05) - 1
+            if index >= 0 and seconds < segments[index].end:
+                current = index
+        for speaker, counter in self.turn_labels.items():
+            turns = self.speaker_turns.get(speaker, [])
+            if current is not None and segments[current].speaker == speaker and current in turns:
+                counter.setText(f"{turns.index(current) + 1} of {len(turns)}")
+            else:
+                counter.setText("1 turn" if len(turns) == 1 else f"{len(turns)} turns")
+
+    def _flash_segment(self, index: int) -> None:
+        """Lets a line's background flash for a moment, so it can be found again."""
+        self._flash_span = self.segment_spans[index]
+        self._highlighted = None
+        self._highlight(self.player.position)
+        self.flash_timer.start()
+
+    def _end_flash(self) -> None:
+        self._flash_span = None
+        self._highlighted = None
+        self._highlight(self.player.position)
 
     def _speaker_icon(self, speaker: int) -> QIcon:
         avatar = Avatar(20)
@@ -1215,15 +1400,27 @@ class MainWindow(QMainWindow):
 
         small = f"color:{t.muted}; font-size:12px;"
         body = f"font-size:15px; line-height:146%; margin:0 0 {22 if transcript.has_speakers else 12}px 0;"
+
+        def faded(color: str) -> str:
+            # Rich text has no opacity: blend the colour into the card behind the text.
+            return theme.mix(t.surface, color, FADED_SHARE).name()
+
         parts: list[str] = []
         if transcript.has_speakers:
             for index, segment in enumerate(transcript.segments):
-                head = (f'<span style="color:{t.speaker_color(segment.speaker)}; font-weight:600; font-size:14px;">'
+                hidden = segment.speaker in self.hidden_speakers
+                name_color = t.speaker_color(segment.speaker)
+                stamp_style, body_style = small, body
+                if hidden:
+                    name_color = faded(name_color)
+                    stamp_style = f"color:{faded(t.muted)}; font-size:12px;"
+                    body_style = f"{body} color:{faded(t.ink)};"
+                head = (f'<span style="color:{name_color}; font-weight:600; font-size:14px;">'
                         f"{esc(transcript.name(segment.speaker))}</span>")
                 if stamps:
-                    head += f'&nbsp;&nbsp;<span style="{small}">{timestamp(segment.start)}</span>'
+                    head += f'&nbsp;&nbsp;<span style="{stamp_style}">{timestamp(segment.start)}</span>'
                 parts.append(f'<p style="margin:0 0 3px 0;">{head}</p>'
-                             f'<p style="{body}">{words(index, segment)}</p>')
+                             f'<p style="{body_style}">{words(index, segment)}</p>')
         elif stamps:
             rows = "".join(
                 f'<tr><td width="74" valign="top" style="{small} padding-top:3px;">{timestamp(s.start)}</td>'
@@ -1409,6 +1606,7 @@ class MainWindow(QMainWindow):
         self.scrubber.set_position(seconds)
         self._highlight(seconds)
         self._scroll_to_playback(seconds)
+        self._refresh_turn_labels(seconds)
 
     def _index_text(self) -> None:
         """Finds where each segment, and each timed word, sits in the view."""
@@ -1456,6 +1654,8 @@ class MainWindow(QMainWindow):
         self._highlighted = (segment, word)
         t = theme.current()
         selections = []
+        if self._flash_span is not None:
+            selections.append(self._selection(*self._flash_span, theme.mix(t.brand_soft, t.brand, 0.32)))
         if segment is not None:
             selections.append(self._selection(*self.segment_spans[segment], t.brand_soft))
             if word is not None:
@@ -1492,6 +1692,10 @@ class MainWindow(QMainWindow):
             s = self.transcript.segments[segment]
             progress = (seconds - s.start) / (s.end - s.start) if s.end > s.start else 0.0
             position = first + round((last - first) * max(0.0, min(1.0, progress)))
+        self._scroll_to_character(position)
+
+    def _scroll_to_character(self, position: int) -> None:
+        """Animates the view so the line holding the character is in the middle."""
         cursor = QTextCursor(self.text_view.document())
         cursor.setPosition(position)
         bar = self.text_view.verticalScrollBar()

@@ -125,3 +125,34 @@ struct ShareBar: View {
         .frame(height: 4)
     }
 }
+
+/// Bottom left of the window: the version, the project and who made it.
+struct AboutFooter: View {
+    static let project = URL(string: "https://github.com/CrissZollo/leoslyssnare")!
+    static let support = URL(string: "https://ko-fi.com/crisszollo")!
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Leos Lyssnare \(UpdateChecker.currentVersion)")
+            separator
+            link("GitHub", Self.project)
+            separator
+            Text("by CrissZollo")
+            separator
+            link("Support on Ko-fi", Self.support)
+        }
+        .font(.system(size: 12))
+        .foregroundColor(Theme.muted)
+    }
+
+    private var separator: some View {
+        Text("·")
+    }
+
+    private func link(_ title: String, _ url: URL) -> some View {
+        Link(destination: url) {
+            Text(title).foregroundColor(Theme.brand)
+        }
+        .help(url.absoluteString)
+    }
+}
