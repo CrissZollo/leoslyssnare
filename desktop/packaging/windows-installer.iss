@@ -1,7 +1,7 @@
 ; Inno Setup script for Leos Lyssnare. Called by build-windows.ps1, which
 ; passes AppVersion and SourceDir (the PyInstaller output folder).
 #ifndef AppVersion
-  #define AppVersion "0.1.2"
+  #define AppVersion "0.1.3"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\build\windows\dist\LeosLyssnare"
@@ -41,4 +41,4 @@ Name: "{autoprograms}\Leos Lyssnare"; Filename: "{app}\LeosLyssnare.exe"
 Name: "{autodesktop}\Leos Lyssnare"; Filename: "{app}\LeosLyssnare.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\LeosLyssnare.exe"; Description: "{cm:LaunchProgram,Leos Lyssnare}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\LeosLyssnare.exe"; Description: "{cm:LaunchProgram,Leos Lyssnare}"; Flags: nowait postinstall

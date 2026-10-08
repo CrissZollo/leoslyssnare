@@ -8,6 +8,7 @@ import html
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGridLayout, Q
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSizePolicy,
                                QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
 
-from . import engine, icons, keepawake, paths, sources, theme
+from . import __version__, engine, icons, keepawake, paths, sources, theme, updater
 from .paths import system_env
 from .player import AudioPlayer, PlayerError
 from .recorder import IDLE, PAUSED, RECORDING, AudioRecorder, RecorderError
@@ -139,12 +140,24 @@ class MainWindow(QMainWindow):
         self._on_done = None
         self.worker.cancelled.connect(self._on_cancelled)
 
+        # Looking for a newer release and downloading it run beside the main work.
+        self.available_update: updater.Release | None = None
+        self.update_cancel = threading.Event()
+        self.check_worker = Worker()
+        self.check_worker.finished.connect(self._on_update_checked)
+        self.update_worker = Worker()
+        self.update_worker.progress.connect(self._on_update_progress)
+        self.update_worker.finished.connect(self._on_update_downloaded)
+        self.update_worker.failed.connect(self._on_update_failed)
+        self.update_worker.cancelled.connect(lambda: self._set_updating(False))
+
         central = QWidget()
         central.setObjectName("root")
         root = QVBoxLayout(central)
         root.setContentsMargins(24, 16, 24, 24)
         root.setSpacing(16)
         root.addWidget(self._build_header())
+        root.addWidget(self._build_update_banner())
 
         columns = QHBoxLayout()
         columns.setSpacing(20)
@@ -221,6 +234,130 @@ class MainWindow(QMainWindow):
         recordings.clicked.connect(lambda: open_folder(paths.recordings()))
         row.addWidget(recordings)
         return header
+
+    # MARK: - Updates
+
+    def _build_update_banner(self) -> QFrame:
+        self.update_banner = QFrame()
+        self.update_banner.setObjectName("statusCard")
+        row = QHBoxLayout(self.update_banner)
+        row.setContentsMargins(18, 8, 10, 8)
+        row.setSpacing(10)
+        self.update_label = label("", "rowTitle", wrap=True)
+        self.update_label.setMinimumWidth(0)
+        row.addWidget(self.update_label, 1)
+        self.update_notes = Button("What's new", None, "ghost")
+        self.update_notes.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(self.available_update.page)) if self.available_update else None)
+        row.addWidget(self.update_notes)
+        self.update_later = Button("Later", None, "ghost", tooltip="Hide this until the next version")
+        self.update_later.clicked.connect(self._skip_update)
+        row.addWidget(self.update_later)
+        self.update_stop = Button("Stop", "stop", "secondary")
+        self.update_stop.clicked.connect(self.update_cancel.set)
+        row.addWidget(self.update_stop)
+        self.update_button = Button("Update", "download", "primary")
+        self.update_button.clicked.connect(self._start_update)
+        row.addWidget(self.update_button)
+        self.update_banner.hide()
+        self.updating = False
+        return self.update_banner
+
+    def start_update_checks(self) -> None:
+        """Looks for a newer release shortly after start-up and then every few hours."""
+        QTimer.singleShot(3000, self._check_for_update)
+        self.update_check_timer = QTimer(self)
+        self.update_check_timer.setInterval(6 * 60 * 60 * 1000)
+        self.update_check_timer.timeout.connect(self._check_for_update)
+        self.update_check_timer.start()
+
+    def _check_for_update(self) -> None:
+        if not self.updating:
+            # No failed handler: being offline is normal for this app.
+            self.check_worker.run(lambda progress, status: updater.check())
+
+    def _on_update_checked(self, release) -> None:
+        if release is None or self.updating:
+            return
+        if self.settings.value("skippedUpdate") == release.version:
+            return
+        self.available_update = release
+        installs = updater.pick_asset(release, updater.install_kind()) is not None
+        self.update_label.setText(f"Version {release.version} is available (you have {__version__}).")
+        self.update_button.setText("Update and restart" if installs else "Download")
+        self._set_updating(False)
+        self.update_banner.show()
+
+    def _skip_update(self) -> None:
+        if self.available_update:
+            self.settings.setValue("skippedUpdate", self.available_update.version)
+        self.update_banner.hide()
+
+    def _set_updating(self, on: bool) -> None:
+        self.updating = on
+        self.update_cancel.clear()
+        for widget in (self.update_notes, self.update_later, self.update_button):
+            widget.setVisible(not on)
+        self.update_stop.setVisible(on)
+        if self.available_update:
+            self.update_label.setText(
+                "Downloading the update…" if on else
+                f"Version {self.available_update.version} is available (you have {__version__}).")
+
+    def _start_update(self) -> None:
+        release = self.available_update
+        if release is None or self.updating:
+            return
+        kind = updater.install_kind()
+        asset = updater.pick_asset(release, kind)
+        if asset is None:
+            QDesktopServices.openUrl(QUrl(release.page))  # portable build or running from source
+            return
+        if self.recorder.state != IDLE or self.busy:
+            QMessageBox(QMessageBox.NoIcon, "Update",
+                        "Finish the recording or transcription first, then update.",
+                        QMessageBox.Ok, self).exec()
+            return
+        self._set_updating(True)
+        cancelled = self.update_cancel.is_set
+
+        def job(progress, status):
+            if kind == updater.APPIMAGE:
+                # Next to the old file, so replacing it is a rename on the same disk.
+                destination = os.path.join(os.path.dirname(os.environ["APPIMAGE"]), ".leoslyssnare-update.part")
+            else:
+                destination = os.path.join(tempfile.mkdtemp(prefix="leoslyssnare-update-"), asset.name)
+            try:
+                updater.download(asset, destination, progress, cancelled)
+            except updater.UpdateError:
+                if cancelled():
+                    raise engine.Cancelled()
+                raise
+            return kind, destination
+
+        self.update_worker.run(job)
+
+    def _on_update_progress(self, fraction: float) -> None:
+        if self.updating and fraction > 0:
+            self.update_label.setText(f"Downloading the update… {int(fraction * 100)} %")
+
+    def _on_update_downloaded(self, result) -> None:
+        kind, path = result
+        try:
+            if kind == updater.WINDOWS_INSTALLER:
+                updater.install_windows(path)
+            else:
+                updater.relaunch_appimage(updater.replace_appimage(path))
+        except OSError as error:
+            self._on_update_failed(str(error))
+            return
+        self.close()
+
+    def _on_update_failed(self, message: str) -> None:
+        self._set_updating(False)
+        self._show_error(f"The update failed: {message}\n\nYou can download it from the release page instead.")
+        if self.available_update:
+            QDesktopServices.openUrl(QUrl(self.available_update.page))
 
     # MARK: - Sidebar
 
@@ -1454,4 +1591,5 @@ def main() -> int:
     setup_application(app)
     window = MainWindow()
     window.show()
+    window.start_update_checks()
     return app.exec()
