@@ -8,6 +8,7 @@ struct ContentView: View {
     @StateObject private var sources = SourcesModel()
     @StateObject private var player = TranscriptPlayer()
     @StateObject private var transcriber = Transcriber()
+    @StateObject private var updater = UpdateChecker()
 
     @StateObject private var ui = ViewState()
 
@@ -17,6 +18,9 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+            if updater.available != nil {
+                updateBanner
+            }
             HStack(alignment: .top, spacing: 20) {
                 sidebar
                 VStack(spacing: 14) {
@@ -34,6 +38,7 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
         .background(WindowCloseGuard())
         .onAppear { RecordingGuard.recorder = recorder }
+        .task { await updater.checkPeriodically() }
         // A new transcript, or its recording found: get the recording ready to play.
         .onChange(of: transcriber.transcript.map { [$0.sourceURL, $0.savedURL] }) { _, _ in
             openRecording()
@@ -394,6 +399,49 @@ struct ContentView: View {
             }
         }
         .padding(EdgeInsets(top: 12, leading: 18, bottom: 14, trailing: 14))
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.brandSoft))
+    }
+
+    // MARK: - Update
+
+    private var updateBanner: some View {
+        HStack(spacing: 10) {
+            Group {
+                if let message = updater.errorMessage {
+                    Text(message).foregroundColor(Theme.warn)
+                } else if updater.isInstalling {
+                    Text(updater.progress.map { "Downloading the update… \(Int($0 * 100)) %" } ?? "Downloading the update…")
+                } else if let release = updater.available {
+                    Text("Version \(release.version) is available (you have \(UpdateChecker.currentVersion)).")
+                }
+            }
+            .font(.system(size: 14, weight: .medium))
+            .foregroundColor(Theme.ink)
+            .lineLimit(2)
+            Spacer()
+            if updater.isInstalling {
+                Button("Stop") { updater.cancelInstall() }
+                    .buttonStyle(OutlineButtonStyle())
+            } else if let release = updater.available {
+                Button("What's new") { NSWorkspace.shared.open(release.page) }
+                    .buttonStyle(GhostButtonStyle())
+                Button("Later") { updater.skip() }
+                    .buttonStyle(GhostButtonStyle())
+                Button(updater.canInstallInPlace ? "Update and restart" : "Download") {
+                    if updater.canInstallInPlace {
+                        if recorder.state != .idle || transcriber.isBusy {
+                            updater.errorMessage = "Finish the recording or transcription first, then update."
+                        } else {
+                            Task { await updater.install() }
+                        }
+                    } else {
+                        NSWorkspace.shared.open(release.page)
+                    }
+                }
+                .buttonStyle(FilledButtonStyle(fill: Theme.brand, foreground: Theme.brandInk, height: 34))
+            }
+        }
+        .padding(EdgeInsets(top: 8, leading: 18, bottom: 8, trailing: 10))
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.brandSoft))
     }
 

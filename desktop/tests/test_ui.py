@@ -322,3 +322,19 @@ def test_selection_from_a_name_counts_from_its_line(window):
     assert window._selected_text_range() == ((0, 0), (1, 4))
     window.transcript.has_speakers = False
     assert window._selected_text_range() is None
+
+
+def test_update_banner_shows_only_for_a_newer_release(window):
+    from leoslyssnare import updater
+
+    assert window.update_banner.isHidden()
+    window._on_update_checked(None)
+    assert window.update_banner.isHidden()
+    window._on_update_checked(updater.Release("99.0.0", "https://example.com", []))
+    assert not window.update_banner.isHidden()
+    assert "99.0.0" in window.update_label.text()
+    assert window.update_button.text().strip() == "Download"  # nothing to install in place here
+    window._skip_update()
+    assert window.update_banner.isHidden()
+    window._on_update_checked(updater.Release("99.0.0", "https://example.com", []))
+    assert window.update_banner.isHidden()  # skipped versions stay hidden
