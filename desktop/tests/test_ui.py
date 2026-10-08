@@ -12,7 +12,7 @@ pytest.importorskip("PySide6.QtSvg")
 
 from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QTextCursor, QWheelEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from leoslyssnare import app as appmod  # noqa: E402
 from leoslyssnare import theme  # noqa: E402
@@ -338,3 +338,61 @@ def test_update_banner_shows_only_for_a_newer_release(window):
     assert window.update_banner.isHidden()
     window._on_update_checked(updater.Release("99.0.0", "https://example.com", []))
     assert window.update_banner.isHidden()  # skipped versions stay hidden
+
+
+def test_footer_shows_version_and_links(window):
+    from leoslyssnare import __version__
+
+    texts = [w.text().strip() for w in window.findChildren(QLabel)]
+    assert f"Leos Lyssnare {__version__}" in texts and "by CrissZollo" in texts
+    tips = {b.toolTip() for b in window.findChildren(QPushButton)}
+    assert appmod.PROJECT_URL in tips and appmod.SUPPORT_URL == "https://ko-fi.com/crisszollo" and appmod.SUPPORT_URL in tips
+
+
+def four_turns() -> Transcript:
+    segments = [Segment(0, 5, 1, "Hej alla."), Segment(5, 9, 2, "Tack."),
+                Segment(9, 14, 1, "Nu börjar vi."), Segment(14, 20, 3, "Ja.")]
+    return Transcript("/tmp/missing.ogg", segments, "sv", 1.0, True)
+
+
+def test_arrows_go_to_a_speakers_turns_without_a_recording(window):
+    window.transcript = four_turns()
+    window._show_transcript()
+    assert window.turn_labels[3].text() == "1 turn" and window.turn_labels[1].text() == "2 turns"
+
+    window._go_to_turn(1, forward=True)  # nothing played yet: the first one
+    assert window._turn_cursor == 0 and window.turn_labels[1].text() == "1 of 2"
+    window._go_to_turn(1, forward=True)
+    assert window._turn_cursor == 9 and window.turn_labels[1].text() == "2 of 2"
+    window._go_to_turn(1, forward=True)  # after the last: round to the first
+    assert window._turn_cursor == 0
+    window._go_to_turn(1, forward=False)  # before the first: round to the last
+    assert window._turn_cursor == 9
+    window._go_to_turn(3, forward=False)  # a speaker with a single turn, from anywhere
+    assert window._turn_cursor == 14 and window.turn_labels[3].text() == "1 of 1"
+    assert window.turn_labels[1].text() == "2 turns"
+    # The line flashes, then goes back to normal.
+    first, last = window.segment_spans[3]
+    assert [s.cursor.selectedText() for s in window.text_view.extraSelections()] == ["Ja."]
+    window._end_flash()
+    assert window.text_view.extraSelections() == []
+
+
+def test_eye_fades_a_speakers_text_and_resets_for_a_new_transcript(window):
+    window.transcript = four_turns()
+    window._show_transcript()
+    normal = window._transcript_html()
+    window._set_speaker_hidden(2, True, window.findChildren(appmod.Button)[0])
+    faded = window._transcript_html()
+    assert faded != normal and 2 in window.hidden_speakers
+    # The text is all still there, just in a colour closer to the card's.
+    t = theme.current()
+    faded_ink = theme.mix(t.surface, t.ink, appmod.FADED_SHARE).name()
+    assert faded_ink in faded and faded_ink not in normal
+    assert faded.count("Tack.") == 1 and faded.count(faded_ink) == 1  # only the second speaker's line
+    window._merge_speakers(2, 1)  # nothing left to hide
+    assert window.hidden_speakers == set()
+    window._set_speaker_hidden(3, True, window.findChildren(appmod.Button)[0])
+    window.transcript = four_turns()
+    window._show_transcript()
+    assert window.hidden_speakers == set()

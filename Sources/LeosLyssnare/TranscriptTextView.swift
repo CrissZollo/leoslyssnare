@@ -14,10 +14,19 @@ typealias TextPosition = (line: Int, offset: Int)
 /// kept in the middle of the view, a click plays from the word clicked, and
 /// selected text can be given to another speaker from the right-click menu.
 struct TranscriptTextView: NSViewRepresentable {
+    /// A request to bring a line into view and flash it. A new `id` is a new request.
+    struct Reveal: Equatable {
+        let line: Int
+        let id: Int
+    }
+
     let transcript: Transcript
     /// Transcriber.revision: the text is only rebuilt when it changes.
     let revision: Int
     let showTimestamps: Bool
+    /// Speakers whose text is shown faded.
+    let hiddenSpeakers: Set<Int>
+    let reveal: Reveal?
     /// The playback position to highlight, or nil before the user has played or jumped.
     let position: Double?
     let follow: Bool
@@ -75,6 +84,9 @@ struct TranscriptTextView: NSViewRepresentable {
         private var starts: [Double] = []
         private var builtRevision = -1
         private var builtTimestamps = true
+        private var builtHidden: Set<Int> = []
+        private var revealed: Reveal?
+        private var flash: (range: NSRange, clear: DispatchWorkItem)?
         private var highlighted: Playing?
         private var highlightRanges: [NSRange] = []
         private var scrollTarget: CGFloat?
@@ -106,8 +118,17 @@ struct TranscriptTextView: NSViewRepresentable {
 
         func update(_ view: TranscriptTextView) {
             self.view = view
-            if view.revision != builtRevision || view.showTimestamps != builtTimestamps {
+            if view.revision != builtRevision || view.showTimestamps != builtTimestamps
+                || view.hiddenSpeakers != builtHidden {
                 rebuild(view)
+            }
+            if let request = view.reveal {
+                if request != revealed {
+                    revealed = request
+                    reveal(line: request.line)
+                }
+            } else {
+                revealed = nil  // so the first request of the next transcript counts
             }
             highlight(view.position)
             if view.follow, let position = view.position {
@@ -121,18 +142,26 @@ struct TranscriptTextView: NSViewRepresentable {
             guard let textView, let scrollView, let storage else { return }
             builtRevision = view.revision
             builtTimestamps = view.showTimestamps
+            builtHidden = view.hiddenSpeakers
             let origin = scrollView.contentView.bounds.origin
-            let (text, layout) = Self.build(view.transcript, timestamps: view.showTimestamps)
+            let (text, layout) = Self.build(view.transcript, timestamps: view.showTimestamps,
+                                            hidden: view.hiddenSpeakers)
             storage.setAttributedString(text)
             self.layout = layout
             starts = view.transcript.segments.map(\.start)
             highlighted = nil
             highlightRanges = []
+            flash?.clear.cancel()
+            flash = nil
             scrollView.contentView.scroll(to: origin)
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
 
-        static func build(_ transcript: Transcript, timestamps: Bool) -> (NSAttributedString, TranscriptLayout) {
+        /// How much of a hidden speaker's text is left.
+        private static let fadedAlpha: CGFloat = 0.25
+
+        static func build(_ transcript: Transcript, timestamps: Bool,
+                          hidden: Set<Int>) -> (NSAttributedString, TranscriptLayout) {
             let text = NSMutableAttributedString()
             var layout = TranscriptLayout()
 
@@ -151,12 +180,16 @@ struct TranscriptTextView: NSViewRepresentable {
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
                 .foregroundColor: Theme.NS.muted,
             ]
-            func append(_ string: String, _ attributes: [NSAttributedString.Key: Any]) {
+            func append(_ string: String, _ attributes: [NSAttributedString.Key: Any], faded: Bool = false) {
+                var attributes = attributes
+                if faded, let color = attributes[.foregroundColor] as? NSColor {
+                    attributes[.foregroundColor] = color.withAlphaComponent(fadedAlpha)
+                }
                 text.append(NSAttributedString(string: string, attributes: attributes))
             }
-            func appendLine(_ segment: TranscriptSegment) {
+            func appendLine(_ segment: TranscriptSegment, faded: Bool = false) {
                 let start = text.length
-                append(segment.text, body)
+                append(segment.text, body, faded: faded)
                 layout.lines.append(NSRange(location: start, length: (segment.text as NSString).length))
                 // The words, found in order in the line's text.
                 let line = segment.text as NSString
@@ -176,15 +209,16 @@ struct TranscriptTextView: NSViewRepresentable {
             let segments = transcript.segments
             if transcript.hasSpeakers {
                 for segment in segments {
+                    let faded = segment.speaker.map(hidden.contains) ?? false
                     let head: [NSAttributedString.Key: Any] = [
                         .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
                         .foregroundColor: Theme.NS.speakerColor(segment.speaker),
                         .paragraphStyle: style(lineSpacing: 0, after: 3),
                     ]
-                    append(transcript.name(for: segment.speaker), head)
-                    if timestamps { append("  " + Transcript.timestamp(segment.start), small) }
+                    append(transcript.name(for: segment.speaker), head, faded: faded)
+                    if timestamps { append("  " + Transcript.timestamp(segment.start), small, faded: faded) }
                     append("\n", head)
-                    appendLine(segment)
+                    appendLine(segment, faded: faded)
                     append("\n", body)
                 }
             } else if timestamps {
@@ -247,9 +281,7 @@ struct TranscriptTextView: NSViewRepresentable {
         /// and end of the transcript the scroll range runs out, so it sits
         /// higher or lower instead.
         private func scrollToPlayback(_ seconds: Double) {
-            guard let now = playing(at: seconds), let view, let textView, let scrollView,
-                  let layoutManager = textView.layoutManager, let container = textView.textContainer
-            else { return }
+            guard let now = playing(at: seconds), let view else { return }
             let line = layout.lines[now.line]
             let index: Int
             if let word = now.word {
@@ -260,6 +292,14 @@ struct TranscriptTextView: NSViewRepresentable {
                 let progress = segment.end > segment.start ? (seconds - segment.start) / (segment.end - segment.start) : 0
                 index = line.location + Int((Double(line.length) * max(0, min(1, progress))).rounded())
             }
+            scroll(toCharacter: index)
+        }
+
+        /// Animates the view so the line holding the character is in the middle.
+        private func scroll(toCharacter index: Int) {
+            guard let textView, let scrollView,
+                  let layoutManager = textView.layoutManager, let container = textView.textContainer
+            else { return }
             layoutManager.ensureLayout(for: container)
             let glyph = layoutManager.glyphIndexForCharacter(at: min(index, max(0, (textView.string as NSString).length - 1)))
             let rect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
@@ -290,6 +330,32 @@ struct TranscriptTextView: NSViewRepresentable {
                 clip.animator().setBoundsOrigin(clip.bounds.origin)
             }
             view.onUserScroll()
+        }
+
+        /// Brings a line into view and lets its background flash for a moment,
+        /// so it can be found again in a long transcript.
+        private func reveal(line: Int) {
+            guard let layoutManager = textView?.layoutManager, layout.lines.indices.contains(line) else { return }
+            let range = layout.lines[line]
+            scroll(toCharacter: range.location)
+
+            flash?.clear.cancel()
+            if let old = flash?.range { layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: old) }
+            layoutManager.addTemporaryAttribute(.backgroundColor, value: Theme.NS.playingWord, forCharacterRange: range)
+            let clear = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, let layoutManager = self.textView?.layoutManager,
+                          NSMaxRange(range) <= (self.storage?.length ?? 0)
+                    else { return }
+                    layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+                    self.flash = nil
+                    // The line may be the one being played: put its highlight back.
+                    self.highlighted = nil
+                    self.highlight(self.view?.position)
+                }
+            }
+            flash = (range, clear)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4, execute: clear)
         }
 
         // MARK: - Clicks and the menu

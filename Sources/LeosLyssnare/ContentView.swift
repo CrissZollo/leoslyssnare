@@ -30,8 +30,9 @@ struct ContentView: View {
                     transcriptSection
                 }
             }
+            AboutFooter()
         }
-        .padding(EdgeInsets(top: 16, leading: 24, bottom: 24, trailing: 24))
+        .padding(EdgeInsets(top: 16, leading: 24, bottom: 16, trailing: 24))
         .frame(minWidth: 1000, idealWidth: 1180, minHeight: 640, idealHeight: 780)
         .background(Theme.canvas)
         // Files dropped anywhere on the window, not only on the file card.
@@ -42,6 +43,13 @@ struct ContentView: View {
         // A new transcript, or its recording found: get the recording ready to play.
         .onChange(of: transcriber.transcript.map { [$0.sourceURL, $0.savedURL] }) { _, _ in
             openRecording()
+            ui.hiddenSpeakers = []
+            ui.revealed = nil
+        }
+        // A speaker who has no text left (merged away, or all of it moved) can't stay hidden.
+        .onChange(of: transcriber.revision) { _, _ in
+            guard let transcript = transcriber.transcript else { return }
+            ui.hiddenSpeakers.formIntersection(transcript.speakers)
         }
         .onReceive(tick) { _ in
             ui.record(level: recorder.level, state: recorder.state)
@@ -544,6 +552,8 @@ struct ContentView: View {
                     transcript: transcript,
                     revision: transcriber.revision,
                     showTimestamps: ui.showTimestamps,
+                    hiddenSpeakers: ui.hiddenSpeakers,
+                    reveal: ui.revealed.map { TranscriptTextView.Reveal(line: $0.line, id: $0.id) },
                     position: player.shownPosition,
                     follow: player.follow,
                     canJump: player.url != nil,
@@ -649,10 +659,12 @@ struct ContentView: View {
         let share = seconds / total
         return HStack(alignment: .top, spacing: 10) {
             SpeakerAvatar(speaker: speaker, name: transcript.speakerNames[speaker] ?? "")
+                .opacity(ui.hiddenSpeakers.contains(speaker) ? 0.4 : 1)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     TextField("Speaker \(speaker)", text: speakerNameBinding(speaker))
                         .textFieldStyle(.roundedBorder)
+                    visibilityButton(transcript, speaker: speaker)
                     mergeMenu(transcript, speaker: speaker)
                 }
                 ShareBar(speaker: speaker, share: share)
@@ -661,12 +673,103 @@ struct ContentView: View {
                     .monospacedDigit()
                     .foregroundColor(Theme.muted)
                     .help("Total speaking time")
+                turnNavigator(transcript, speaker: speaker)
                 Text("“\(transcript.sample(for: speaker))”")
                     .font(.system(size: 12))
                     .foregroundColor(Theme.muted)
                     .lineLimit(3)
             }
         }
+    }
+
+    /// The eye beside a name: fades everything this speaker says in the transcript.
+    private func visibilityButton(_ transcript: Transcript, speaker: Int) -> some View {
+        let hidden = ui.hiddenSpeakers.contains(speaker)
+        let name = transcript.name(for: speaker)
+        return Button {
+            if hidden { ui.hiddenSpeakers.remove(speaker) } else { ui.hiddenSpeakers.insert(speaker) }
+        } label: {
+            Image(systemName: hidden ? "eye.slash" : "eye")
+                .font(.system(size: 13))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(hidden ? Theme.brand : Theme.muted)
+        .help(hidden ? "Show what \(name) says" : "Fade what \(name) says in the transcript")
+    }
+
+    /// Previous and next time this speaker talks, to jump straight to it.
+    private func turnNavigator(_ transcript: Transcript, speaker: Int) -> some View {
+        let turns = transcript.segments.indices.filter { transcript.segments[$0].speaker == speaker }
+        // The turn being played or last jumped to, if it is this speaker's.
+        var current: Int?
+        if let time = currentReference {
+            current = turns.firstIndex { (index: Int) -> Bool in
+                let segment = transcript.segments[index]
+                return segment.start - 0.05 <= time && time < segment.end
+            }
+        }
+        let label: String
+        if let current {
+            label = "\(current + 1) of \(turns.count)"
+        } else {
+            label = turns.count == 1 ? "1 turn" : "\(turns.count) turns"
+        }
+        let name = transcript.name(for: speaker)
+        return HStack(spacing: 2) {
+            turnButton("chevron.left", help: "Previous time \(name) speaks") {
+                jump(transcript, turns: turns, forward: false)
+            }
+            Text(label)
+                .font(.system(size: 12))
+                .monospacedDigit()
+                .foregroundColor(Theme.muted)
+                .frame(minWidth: 58)
+            turnButton("chevron.right", help: "Next time \(name) speaks") {
+                jump(transcript, turns: turns, forward: true)
+            }
+        }
+    }
+
+    private func turnButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Theme.surface))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.lineStrong, lineWidth: 1))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(Theme.ink)
+        .help(help)
+    }
+
+    /// Where the user is in the recording: the playback position, or else
+    /// the turn last jumped to when there's no recording to play.
+    private var currentReference: Double? {
+        player.shownPosition ?? ui.revealed?.start
+    }
+
+    /// Goes to the speaker's next (or previous) turn counted from where the
+    /// user is, and from the other end after the last (or before the first).
+    /// Plays from there when there's a recording; the transcript scrolls to it either way.
+    private func jump(_ transcript: Transcript, turns: [Int], forward: Bool) {
+        guard !turns.isEmpty else { return }
+        let start = { (index: Int) in transcript.segments[index].start }
+        let target: Int
+        if let here = currentReference {
+            if forward {
+                target = turns.first { start($0) > here + 0.05 } ?? turns[0]
+            } else {
+                target = turns.last { start($0) < here - 0.05 } ?? turns[turns.count - 1]
+            }
+        } else {
+            target = forward ? turns[0] : turns[turns.count - 1]
+        }
+        ui.revealed = Revealed(line: target, start: start(target), id: (ui.revealed?.id ?? 0) + 1)
+        if player.url != nil { player.seek(start(target)) }
     }
 
     /// "Same person as another speaker? Merge them."
@@ -712,6 +815,14 @@ struct ContentView: View {
     }
 }
 
+/// A turn jumped to from the speakers panel: its line, when it starts, and a
+/// number that grows with every jump so the same turn can be asked for again.
+private struct Revealed {
+    let line: Int
+    let start: Double
+    let id: Int
+}
+
 /// Local UI state. Kept in an ObservableObject instead of `@State` because
 /// `@State` is a macro in newer SDKs, and its plugin (SwiftUIMacros) ships
 /// only with full Xcode, not with the Command Line Tools.
@@ -722,6 +833,10 @@ private final class ViewState: ObservableObject {
     @Published var askToTranscribe = false
     @Published var showTimestamps = true
     @Published var showSpeakers = true
+    /// Speakers whose text is faded in the transcript.
+    @Published var hiddenSpeakers: Set<Int> = []
+    /// The turn last jumped to from the speakers panel.
+    @Published var revealed: Revealed?
     @Published var isDropTargeted = false
 
     /// Recent input levels for the waveform, newest last.
