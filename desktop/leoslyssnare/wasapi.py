@@ -333,6 +333,28 @@ def _session_pids() -> set[int]:
     return pids
 
 
+# Meeting apps, listed whenever they're open: Windows only knows an app plays
+# sound once it has started to, and a meeting app doesn't until the call has
+# begun (not on Teams's "join" screen, say). The name is used when the program
+# doesn't give one.
+MEETING_APPS = {
+    "ms-teams.exe": "Microsoft Teams",
+    "teams.exe": "Microsoft Teams (classic)",
+    "zoom.exe": "Zoom",
+    "webex.exe": "Webex",
+    "ciscocollabhost.exe": "Webex",
+    "lync.exe": "Skype for Business",
+    "slack.exe": "Slack",
+    "discord.exe": "Discord",
+}
+
+
+def _open_meeting_apps(processes: dict[int, tuple[int, str]]) -> set[int]:
+    """The meeting apps that are open, one process for each (not their helpers)."""
+    return {pid for pid, (parent, exe) in processes.items()
+            if exe.lower() in MEETING_APPS and processes.get(parent, (0, ""))[1].lower() != exe.lower()}
+
+
 def applications() -> list[Application]:
     try:
         processes = _processes()
@@ -340,17 +362,16 @@ def applications() -> list[Application]:
     except OSError:
         return []
     own = os.getpid()
+    roots = {_app_root(pid, processes) for pid in pids - {own} if pid in processes}
+    roots |= _open_meeting_apps(processes)
     found: dict[str, Application] = {}
-    for pid in pids - {own}:
-        if pid not in processes:
-            continue
-        root = _app_root(pid, processes)
-        if root == own:
-            continue
-        key = processes[root][1].lower()
+    for root in roots - {own}:
+        exe = processes[root][1]
+        key = exe.lower()
         if key not in found:
             path = _image_path(root)
-            name = (_file_description(path) if path else None) or os.path.splitext(processes[root][1])[0]
+            name = ((_file_description(path) if path else None) or MEETING_APPS.get(key)
+                    or os.path.splitext(exe)[0])
             found[key] = Application(key, name)
     return sorted(found.values(), key=lambda app: app.name.lower())
 
