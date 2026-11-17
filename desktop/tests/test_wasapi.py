@@ -53,6 +53,13 @@ def test_capture_follows_each_copy_of_the_app(monkeypatch):
     assert wasapi.find_streams(sources.ALL_SOUND) == {"all": (os.getpid(), False)}
 
 
+def test_open_meeting_apps_are_found_before_they_play_sound():
+    processes = {**PROCESSES, 8000: (1000, "Zoom.exe"), 8100: (8000, "Zoom.exe")}
+    found = wasapi._open_meeting_apps(processes)
+    assert 8000 in found and 8100 not in found  # the app, not its helper
+    assert {processes[pid][1].lower() for pid in found} <= set(wasapi.MEETING_APPS)
+
+
 def test_completion_handler_answers_like_a_com_object():
     handler = wasapi._CompletionHandler()
     this = handler.pointer.value

@@ -64,7 +64,8 @@ def default_microphone() -> str | None:
 
 
 def applications() -> list[Application]:
-    """The apps playing sound right now, by name."""
+    """The apps playing sound right now (and, where the system can tell,
+    meeting apps that are open but haven't started to), by name."""
     backend = _backend()
     return backend.applications() if backend else []
 
